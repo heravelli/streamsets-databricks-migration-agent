@@ -1,0 +1,91 @@
+stages:
+  - streamsets_stage: "com.streamsets.pipeline.stage.executor.shell.ShellDExecutor"
+    streamsets_label: "Shell Executor"
+    databricks_equivalent: "custom_python"
+    databricks_label: "dbutils.notebook.run() or subprocess"
+    confidence: "medium"
+    code_template: |
+      # Shell Executor → dbutils or subprocess
+      import subprocess
+
+      result = subprocess.run(
+          ["{{ command }}"],
+          shell=True,
+          capture_output=True,
+          text=True
+      )
+      if result.returncode != 0:
+          raise RuntimeError(f"Shell command failed: {result.stderr}")
+    config_mapping:
+      conf.script: "command"
+    notes: "Shell commands in Databricks run on the driver node. Consider Databricks Jobs for orchestration."
+    requires_manual_review: true
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.executor.jdbc.JdbcQueryDExecutor"
+    streamsets_label: "JDBC Query Executor"
+    databricks_equivalent: "spark_sql"
+    databricks_label: "spark.sql() or JDBC execution"
+    confidence: "high"
+    code_template: |
+      # JDBC Query Executor → spark.sql or JDBC execution
+      spark.sql("{{ sql_query }}")
+
+      # For external databases, use JDBC:
+      # import jaydebeapi
+      # conn = jaydebeapi.connect(...)
+      # cursor = conn.cursor()
+      # cursor.execute("{{ sql_query }}")
+    config_mapping:
+      hikariConfigBean.connectionString: "jdbc_url"
+      queries: "sql_query"
+    notes: "For Delta/Hive, use spark.sql(). For external DBs, use JDBC connection."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.executor.http.HttpDExecutor"
+    streamsets_label: "HTTP Client Executor"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Python requests"
+    confidence: "high"
+    code_template: |
+      # HTTP Client Executor → Python requests
+      import requests
+
+      response = requests.request(
+          method="{{ method | default('POST') }}",
+          url="{{ url }}",
+          headers={{ headers | tojson }},
+          json={{ body | tojson }},
+          timeout=30
+      )
+      response.raise_for_status()
+    config_mapping:
+      conf.resourceUrl: "url"
+      conf.httpMethod: "method"
+    notes: "Add appropriate error handling and retry logic."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.executor.emailexecutor.EmailDExecutor"
+    streamsets_label: "Email Executor"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Python smtplib or notification service"
+    confidence: "medium"
+    code_template: |
+      # Email Executor → Python email
+      import smtplib
+      from email.mime.text import MIMEText
+
+      msg = MIMEText("{{ email_body }}")
+      msg["Subject"] = "{{ subject }}"
+      msg["From"] = "{{ from_address }}"
+      msg["To"] = "{{ to_addresses }}"
+
+      with smtplib.SMTP("{{ smtp_host }}", {{ smtp_port | default(587) }}) as server:
+          server.starttls()
+          server.login("{{ smtp_user }}", dbutils.secrets.get("{{ scope }}", "smtp_password"))
+          server.send_message(msg)
+    config_mapping:
+      conf.to: "to_addresses"
+      conf.subject: "subject"
+      conf.body: "email_body"
+    notes: "Consider using Databricks alerts or Slack/Teams webhooks instead of email."
+    requires_manual_review: false

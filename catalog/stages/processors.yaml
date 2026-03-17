@@ -1,0 +1,266 @@
+stages:
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.fieldtypeconverter.FieldTypeConverterDProcessor"
+    streamsets_label: "Field Type Converter"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark cast()"
+    confidence: "exact"
+    code_template: |
+      # Field Type Converter → Spark cast
+      from pyspark.sql.functions import col
+      df = df.withColumn("{{ field_name }}", col("{{ field_name }}").cast("{{ target_type }}"))
+    config_mapping:
+      conversions: "field_conversions"
+    notes: "Generate one withColumn per field conversion."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.fieldrenamer.FieldRenamerDProcessor"
+    streamsets_label: "Field Renamer"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark withColumnRenamed()"
+    confidence: "exact"
+    code_template: |
+      # Field Renamer → Spark withColumnRenamed
+      df = df.withColumnRenamed("{{ from_field }}", "{{ to_field }}")
+    config_mapping:
+      renameMapping: "rename_mapping"
+    notes: "Chain multiple withColumnRenamed calls for multiple renames."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.fieldremover.FieldRemoverDProcessor"
+    streamsets_label: "Field Remover"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark drop()"
+    confidence: "exact"
+    code_template: |
+      # Field Remover → Spark drop
+      df = df.drop("{{ field_name }}")
+    config_mapping:
+      fields: "fields_to_remove"
+    notes: "Use df.drop(*fields_list) for multiple fields."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.expression.ExpressionDProcessor"
+    streamsets_label: "Expression Evaluator"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark withColumn() with expr()"
+    confidence: "high"
+    code_template: |
+      # Expression Evaluator → Spark expr
+      from pyspark.sql.functions import expr
+      df = df.withColumn("{{ output_field }}", expr("{{ expression }}"))
+    config_mapping:
+      expressionProcessorConfigs: "expressions"
+    notes: "StreamSets EL expressions use ${...} syntax. Translate to Spark SQL expressions."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.dedup.DeDupDProcessor"
+    streamsets_label: "Record Deduplicator"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark dropDuplicates()"
+    confidence: "exact"
+    code_template: |
+      # Record Deduplicator → Spark dropDuplicates
+      df = df.dropDuplicates(["{{ dedup_fields | join('", "') }}"])
+    config_mapping:
+      compareFields: "dedup_fields"
+      timeWindowSecs: "window_seconds"
+    notes: "Time-windowed dedup requires Spark Structured Streaming watermark."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.groovy.GroovyDProcessor"
+    streamsets_label: "Groovy Evaluator"
+    databricks_equivalent: "custom_python"
+    databricks_label: "PySpark UDF (manual translation required)"
+    confidence: "low"
+    code_template: |
+      # TODO: Manual conversion required
+      # Original Groovy script must be manually translated to PySpark
+      #
+      # Original Groovy:
+      # {{ groovy_script }}
+      #
+      from pyspark.sql.functions import udf
+      from pyspark.sql.types import StringType
+
+      @udf(returnType=StringType())
+      def groovy_transform(value):
+          # IMPLEMENT: Translate Groovy logic to Python
+          raise NotImplementedError("Manual migration required for Groovy Evaluator")
+
+      df = df.withColumn("{{ output_field }}", groovy_transform(df["{{ input_field }}"]))
+    config_mapping:
+      groovyScript: "groovy_script"
+    notes: "Groovy scripts require manual translation to PySpark UDFs or native DataFrame operations."
+    requires_manual_review: true
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.javascript.JavaScriptDProcessor"
+    streamsets_label: "JavaScript Evaluator"
+    databricks_equivalent: "custom_python"
+    databricks_label: "PySpark UDF (manual translation required)"
+    confidence: "low"
+    code_template: |
+      # TODO: Manual conversion required
+      # Original JavaScript must be manually translated to PySpark
+      from pyspark.sql.functions import udf
+      from pyspark.sql.types import StringType
+
+      @udf(returnType=StringType())
+      def js_transform(value):
+          # IMPLEMENT: Translate JavaScript logic to Python
+          raise NotImplementedError("Manual migration required for JavaScript Evaluator")
+
+      df = df.withColumn("{{ output_field }}", js_transform(df["{{ input_field }}"]))
+    config_mapping:
+      script: "javascript_script"
+    notes: "JavaScript scripts require manual translation."
+    requires_manual_review: true
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.jython.JythonDProcessor"
+    streamsets_label: "Jython Evaluator"
+    databricks_equivalent: "custom_python"
+    databricks_label: "PySpark UDF (likely portable)"
+    confidence: "medium"
+    code_template: |
+      # Jython Evaluator → PySpark UDF
+      # Jython is Python 2.x; adapt syntax for Python 3
+      from pyspark.sql.functions import udf
+      from pyspark.sql.types import StringType
+
+      @udf(returnType=StringType())
+      def jython_transform(value):
+          # IMPLEMENT: Jython script (converted to Python 3):
+          # {{ jython_script }}
+          pass
+
+      df = df.withColumn("{{ output_field }}", jython_transform(df["{{ input_field }}"]))
+    config_mapping:
+      script: "jython_script"
+    notes: "Jython (Python 2.x) scripts may need minor syntax updates for Python 3."
+    requires_manual_review: true
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.splitter.SplitterDProcessor"
+    streamsets_label: "Stream Selector"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark filter() for each output lane"
+    confidence: "high"
+    code_template: |
+      # Stream Selector → Spark filter per output lane
+      df_lane_1 = df.filter("{{ condition_1 }}")
+      df_lane_2 = df.filter("{{ condition_2 }}")
+      # Default lane (records not matching any condition)
+      df_default = df.filter("NOT ({{ condition_1 }}) AND NOT ({{ condition_2 }})")
+    config_mapping:
+      lanePredicates: "lane_predicates"
+    notes: "Each lane predicate becomes a filter condition. Translate StreamSets EL to Spark SQL."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.lookup.LookupDProcessor"
+    streamsets_label: "Value Lookup"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark join() against lookup table"
+    confidence: "high"
+    code_template: |
+      # Value Lookup → Spark join
+      lookup_df = spark.read.format("delta").load("{{ lookup_table_path }}")
+      df = df.join(lookup_df.hint("broadcast"),
+                   df["{{ join_key }}"] == lookup_df["{{ lookup_key }}"],
+                   how="left")
+    config_mapping:
+      lookupConfig.keyMappings: "key_mappings"
+    notes: "Use broadcast join hint for small lookup tables."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.base64.Base64DProcessor"
+    streamsets_label: "Base64 Field Encoder/Decoder"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark base64() / unbase64()"
+    confidence: "exact"
+    code_template: |
+      # Base64 Encoder/Decoder → Spark built-in functions
+      from pyspark.sql.functions import base64, unbase64, col
+
+      # Encode:
+      df = df.withColumn("{{ field }}", base64(col("{{ field }}")))
+      # Decode:
+      # df = df.withColumn("{{ field }}", unbase64(col("{{ field }}")))
+    config_mapping:
+      operationType: "operation_type"
+      field: "field"
+    notes: "Use base64() to encode, unbase64() to decode."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.jsonparser.JsonParserDProcessor"
+    streamsets_label: "JSON Parser"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark from_json()"
+    confidence: "exact"
+    code_template: |
+      # JSON Parser → Spark from_json
+      from pyspark.sql.functions import from_json, col
+      from pyspark.sql.types import StructType
+
+      # Define schema or use schema_of_json for inference
+      json_schema = spark.read.json(df.rdd.map(lambda r: r["{{ json_field }}"])).schema
+      df = df.withColumn("{{ output_field }}", from_json(col("{{ json_field }}"), json_schema))
+    config_mapping:
+      fieldPathToRead: "json_field"
+    notes: "Define schema explicitly for production workloads instead of using schema inference."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.xmlparser.XMLParserDProcessor"
+    streamsets_label: "XML Parser"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark XML library (spark-xml)"
+    confidence: "medium"
+    code_template: |
+      # XML Parser → spark-xml library
+      from pyspark.sql.functions import col
+
+      df_parsed = (spark.read
+                      .format("xml")
+                      .option("rowTag", "{{ row_tag }}")
+                      .load("{{ xml_path }}"))
+    config_mapping:
+      fieldPathToRead: "xml_field"
+    notes: "Requires com.databricks:spark-xml library. Add to cluster libraries."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.aggregation.AggregationDProcessor"
+    streamsets_label: "Aggregator"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark groupBy().agg()"
+    confidence: "high"
+    code_template: |
+      # Aggregator → Spark groupBy / agg
+      from pyspark.sql.functions import sum, count, avg, max, min
+
+      df_agg = (df.groupBy("{{ group_by_fields | join('", "') }}")
+                  .agg({{ agg_expressions }}))
+    config_mapping:
+      groupByFields: "group_by_fields"
+      aggregations: "aggregations"
+    notes: "Map StreamSets aggregation functions to Spark equivalents."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.processor.http.HttpDProcessor"
+    streamsets_label: "HTTP Client (Processor)"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Python requests in UDF or foreach"
+    confidence: "medium"
+    code_template: |
+      # HTTP Client Processor → requests in UDF
+      # WARNING: HTTP calls in UDFs are not recommended for large datasets
+      import requests
+      from pyspark.sql.functions import udf
+      from pyspark.sql.types import StringType
+
+      @udf(returnType=StringType())
+      def call_api(field_value):
+          resp = requests.post("{{ url }}", json={"value": field_value}, timeout=10)
+          return resp.text
+
+      df = df.withColumn("{{ output_field }}", call_api(df["{{ input_field }}"]))
+    config_mapping:
+      conf.resourceUrl: "url"
+    notes: "HTTP calls in UDFs are slow and not fault-tolerant. Consider batching via foreachBatch."
+    requires_manual_review: true

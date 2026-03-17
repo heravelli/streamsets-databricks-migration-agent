@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Diff: {{ record.pipeline_title }}{% endblock %}
+{% block content %}
+<div class="container">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+        <a href="/pipelines/{{ record.pipeline_id }}/review" style="color:#6b7280; font-size:13px;">← Back to Review</a>
+        <h1 style="margin:0;">Diff: {{ record.pipeline_title }}</h1>
+    </div>
+    {% if has_diff %}
+    <div class="card">
+        <h2>Changes from Previous Version</h2>
+        <pre style="white-space: pre-wrap;">{% for line in diff.splitlines() %}{% if line.startswith('+') %}<span style="color:#16a34a; background:#f0fdf4;">{{ line }}</span>
+{% elif line.startswith('-') %}<span style="color:#dc2626; background:#fef2f2;">{{ line }}</span>
+{% elif line.startswith('@@') %}<span style="color:#2563eb; background:#eff6ff;">{{ line }}</span>
+{% else %}{{ line }}
+{% endif %}{% endfor %}</pre>
+    </div>
+    {% else %}
+    <div class="card">
+        <p style="color:#9ca3af;">No diff available — either no previous version exists or the code is identical.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

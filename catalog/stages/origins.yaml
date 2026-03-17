@@ -1,0 +1,251 @@
+stages:
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.multikafka.MultiKafkaDSource"
+    streamsets_label: "Multi-Topic Kafka Consumer"
+    databricks_equivalent: "dlt_streaming_table"
+    databricks_label: "Delta Live Tables Streaming Table (Multi-topic Kafka)"
+    confidence: "exact"
+    code_template: |
+      import dlt
+      from pyspark.sql.functions import col, from_json, lit
+      from pyspark.sql.types import StringType
+
+      # Multi-topic Kafka — create one DLT streaming table per topic
+      # Topics: {{ topic_list }}
+
+      {% for topic in topic_list %}
+      @dlt.table(
+          name="{{ topic | replace('-', '_') }}_raw",
+          comment="Migrated from StreamSets Multi-Topic Kafka Consumer — topic: {{ topic }}"
+      )
+      def {{ topic | replace('-', '_') }}_raw():
+          return (spark.readStream
+                      .format("kafka")
+                      .option("kafka.bootstrap.servers", "{{ bootstrap_servers }}")
+                      .option("subscribe", "{{ topic }}")
+                      .option("startingOffsets", "{{ starting_offsets | default('latest') }}")
+                      .load()
+                      .selectExpr(
+                          "CAST(key AS STRING) AS kafka_key",
+                          "CAST(value AS STRING) AS kafka_value",
+                          "topic",
+                          "partition",
+                          "offset",
+                          "timestamp AS kafka_timestamp"
+                      ))
+      {% endfor %}
+    config_mapping:
+      conf.brokerURI: "bootstrap_servers"
+      conf.topicList: "topic_list"
+      conf.consumerGroup: "consumer_group"
+      conf.kafkaAutoOffsetReset: "starting_offsets"
+    notes: "Each topic becomes a separate DLT streaming table. Union them downstream if needed."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.jdbc.JdbcDSource"
+    streamsets_label: "JDBC Multitable Consumer"
+    databricks_equivalent: "autoloader"
+    databricks_label: "Databricks Autoloader (JDBC)"
+    confidence: "high"
+    code_template: |
+      # JDBC Multitable Consumer → Databricks JDBC read
+      jdbc_df = (spark.read
+                   .format("jdbc")
+                   .option("url", "{{ jdbc_url }}")
+                   .option("dbtable", "{{ schema }}.{{ table_name }}")
+                   .option("user", "{{ username }}")
+                   .option("password", dbutils.secrets.get("{{ scope }}", "{{ secret_key }}"))
+                   .load())
+    config_mapping:
+      hikariConfigBean.connectionString: "jdbc_url"
+      tableJdbcConfigBean.schema: "schema"
+      tableJdbcConfigBean.tablePattern: "table_name"
+    notes: "Multitable mode generates single-table template. Loop over tables for multitable pipelines."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.kafka.KafkaDSource"
+    streamsets_label: "Kafka Consumer"
+    databricks_equivalent: "dlt_streaming_table"
+    databricks_label: "Delta Live Tables Streaming Table (Kafka)"
+    confidence: "exact"
+    code_template: |
+      import dlt
+      from pyspark.sql.functions import col, from_json
+      from pyspark.sql.types import StringType
+
+      @dlt.table(
+          name="{{ table_name }}",
+          comment="Migrated from StreamSets Kafka Consumer"
+      )
+      def {{ table_name }}():
+          return (spark.readStream
+                      .format("kafka")
+                      .option("kafka.bootstrap.servers", "{{ bootstrap_servers }}")
+                      .option("subscribe", "{{ topic }}")
+                      .option("startingOffsets", "{{ starting_offsets | default('latest') }}")
+                      .load()
+                      .selectExpr("CAST(key AS STRING)", "CAST(value AS STRING)", "timestamp"))
+    config_mapping:
+      kafkaConfigBean.metadataBrokerList: "bootstrap_servers"
+      kafkaConfigBean.topic: "topic"
+      kafkaConfigBean.kafkaAutoOffsetReset: "starting_offsets"
+    notes: ""
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.s3.AmazonS3DSource"
+    streamsets_label: "Amazon S3"
+    databricks_equivalent: "autoloader"
+    databricks_label: "Databricks Autoloader (S3)"
+    confidence: "high"
+    code_template: |
+      # Amazon S3 → Databricks Autoloader
+      df = (spark.readStream
+               .format("cloudFiles")
+               .option("cloudFiles.format", "{{ file_format | default('json') }}")
+               .option("cloudFiles.schemaLocation", "{{ schema_location }}")
+               .load("s3a://{{ bucket }}/{{ prefix }}"))
+    config_mapping:
+      s3ConfigBean.s3Config.bucket: "bucket"
+      s3ConfigBean.s3Config.commonPrefix: "prefix"
+      dataFormatConfig.dataFormat: "file_format"
+    notes: "Autoloader replaces S3 polling. Set cloudFiles.schemaLocation to a Delta table path."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.mysql.MySQLBinLogDSource"
+    streamsets_label: "MySQL Binary Log"
+    databricks_equivalent: "dlt_streaming_table"
+    databricks_label: "Delta Live Tables (CDC via Debezium or DMS)"
+    confidence: "medium"
+    code_template: |
+      # MySQL Binary Log → Databricks CDC
+      # RECOMMENDATION: Use AWS DMS or Debezium to stream CDC events to Kafka,
+      # then consume with DLT APPLY CHANGES.
+      import dlt
+
+      @dlt.table(name="{{ table_name }}_raw_cdc")
+      def {{ table_name }}_raw_cdc():
+          return (spark.readStream
+                      .format("kafka")
+                      .option("kafka.bootstrap.servers", "{{ bootstrap_servers }}")
+                      .option("subscribe", "{{ cdc_topic }}")
+                      .load())
+
+      dlt.apply_changes(
+          target="{{ table_name }}",
+          source="{{ table_name }}_raw_cdc",
+          keys=["{{ primary_key }}"],
+          sequence_by=col("timestamp"),
+          apply_as_deletes=expr("op = 'D'"),
+          except_column_list=["_rescued_data"]
+      )
+    config_mapping:
+      configBean.hostname: "mysql_host"
+      configBean.port: "mysql_port"
+    notes: "Direct binlog reading is not supported in Databricks. Route through Debezium+Kafka or AWS DMS."
+    requires_manual_review: true
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.mongodb.MongoDBDSource"
+    streamsets_label: "MongoDB"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark MongoDB Connector"
+    confidence: "high"
+    code_template: |
+      # MongoDB → Databricks Spark MongoDB Connector
+      df = (spark.read
+               .format("mongodb")
+               .option("spark.mongodb.read.connection.uri", "{{ connection_uri }}")
+               .option("spark.mongodb.read.database", "{{ database }}")
+               .option("spark.mongodb.read.collection", "{{ collection }}")
+               .load())
+    config_mapping:
+      configBean.mongoConfig.connectionString: "connection_uri"
+      configBean.mongoConfig.database: "database"
+      configBean.mongoConfig.collection: "collection"
+    notes: "Requires spark-mongodb-connector library on the cluster."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.http.HttpClientDSource"
+    streamsets_label: "HTTP Client"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Python requests / httpx in Notebook"
+    confidence: "medium"
+    code_template: |
+      # HTTP Client → Python requests
+      import requests
+      from pyspark.sql import Row
+
+      response = requests.get(
+          url="{{ resource_url }}",
+          headers={{ headers | tojson }},
+          timeout=30
+      )
+      response.raise_for_status()
+      data = response.json()
+
+      # Convert to DataFrame
+      df = spark.createDataFrame([Row(**item) for item in data])
+    config_mapping:
+      conf.resourceUrl: "resource_url"
+      conf.headers: "headers"
+    notes: "For paginated APIs, implement pagination logic manually."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.local.LocalFSDSource"
+    streamsets_label: "Directory (Local FS)"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark read from DBFS or mounted storage"
+    confidence: "high"
+    code_template: |
+      # Local FS Directory → Databricks DBFS / mounted storage
+      df = (spark.read
+               .format("{{ file_format | default('json') }}")
+               .option("multiline", "{{ multiline | default('true') }}")
+               .load("{{ dbfs_path }}"))
+    config_mapping:
+      fileInfoConfig.filePattern: "file_pattern"
+      dataFormatConfig.dataFormat: "file_format"
+    notes: "Replace local filesystem paths with DBFS paths (dbfs:/...) or mounted Azure/S3 paths."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.jdbc.table.TableJdbcDSource"
+    streamsets_label: "JDBC Query Consumer"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark JDBC read with offset tracking"
+    confidence: "high"
+    code_template: |
+      # JDBC Query Consumer → Spark JDBC with incremental read
+      df = (spark.read
+               .format("jdbc")
+               .option("url", "{{ jdbc_url }}")
+               .option("query", "SELECT * FROM {{ table }} WHERE {{ offset_column }} > {{ last_offset }}")
+               .option("user", "{{ username }}")
+               .option("password", dbutils.secrets.get("{{ scope }}", "{{ secret_key }}"))
+               .load())
+    config_mapping:
+      queryConfig.query: "query"
+      hikariConfigBean.connectionString: "jdbc_url"
+    notes: "Implement offset tracking using Delta table or Databricks checkpoint."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.salesforce.SalesforceDSource"
+    streamsets_label: "Salesforce"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Salesforce Connector (simple-salesforce or Fivetran)"
+    confidence: "medium"
+    code_template: |
+      # Salesforce → simple-salesforce Python library
+      from simple_salesforce import Salesforce
+
+      sf = Salesforce(
+          username="{{ sf_username }}",
+          password=dbutils.secrets.get("{{ scope }}", "sf_password"),
+          security_token=dbutils.secrets.get("{{ scope }}", "sf_token")
+      )
+
+      result = sf.query_all("{{ soql_query }}")
+      records = result["records"]
+      df = spark.createDataFrame(records)
+    config_mapping:
+      forceConfig.username: "sf_username"
+      forceConfig.soqlQuery: "soql_query"
+    notes: "Install simple-salesforce on the cluster. For large volumes, consider Fivetran/Airbyte."
+    requires_manual_review: false

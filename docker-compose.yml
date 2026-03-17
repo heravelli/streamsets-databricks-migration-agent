@@ -1,0 +1,15 @@
+services:
+  migration-agent:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount local ./data to /data inside container
+      # Subfolders: pipelines/, state/, output/
+      - ./data:/data
+    env_file: .env
+    environment:
+      - DATA_DIR=/data/pipelines
+      - OUTPUT_DIR=/data/output
+      - STATE_FILE=/data/state/migration_state.json
+    restart: unless-stopped

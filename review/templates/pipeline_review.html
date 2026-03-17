@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}Review: {{ record.pipeline_title }}{% endblock %}
+{% block extra_head %}
+<style>
+    .review-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+    .pane { background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; flex-direction: column; }
+    .pane-header { padding: 12px 16px; background: #f0f0f0; border-bottom: 1px solid #e0e0e0; font-weight: 600; font-size: 13px; display: flex; align-items: center; justify-content: space-between; }
+    .pane-body { padding: 16px; overflow: auto; flex: 1; }
+    .pane-body pre { max-height: 500px; }
+    .stage-table { width: 100%; font-size: 12px; }
+    .stage-table td { padding: 6px 8px; border-top: 1px solid #f0f0f0; }
+    .conf-exact, .conf-high { color: #065f46; background: #d1fae5; padding: 1px 6px; border-radius: 10px; }
+    .conf-medium { color: #92400e; background: #fef3c7; padding: 1px 6px; border-radius: 10px; }
+    .conf-low, .conf-unsupported { color: #991b1b; background: #fee2e2; padding: 1px 6px; border-radius: 10px; }
+    .action-bar { background: white; border-top: 1px solid #e0e0e0; padding: 16px; display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin-top: 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    textarea { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; resize: vertical; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="container">
+    <div style="display:flex; align-items:center; gap:16px; margin-bottom:8px;">
+        <a href="/pipelines/" style="color:#6b7280; font-size:13px;">← Back to queue</a>
+        <h1 style="margin:0;">{{ record.pipeline_title }}</h1>
+        {% if record.current_artifact %}
+            <span class="badge badge-blue">{{ record.current_artifact.artifact_type.value | upper }}</span>
+            {% set conf = record.current_artifact.confidence_score %}
+            <span class="badge {% if conf >= 0.8 %}badge-green{% elif conf >= 0.5 %}badge-yellow{% else %}badge-red{% endif %}">
+                Confidence: {{ (conf * 100) | int }}%
+            </span>
+        {% endif %}
+        {% if record.previous_artifact %}
+            <a href="/pipelines/{{ record.pipeline_id }}/diff" class="btn btn-gray" style="font-size:11px; padding:4px 10px; margin-left:auto;">View Diff</a>
+        {% endif %}
+    </div>
+    <div class="text-muted">Team: {{ record.team_name }} &nbsp;·&nbsp; Status: {{ record.status.value }} &nbsp;·&nbsp; Attempts: {{ record.migration_attempts }}</div>
+
+    <div class="review-grid">
+        <!-- Left pane: original pipeline -->
+        <div class="pane">
+            <div class="pane-header">
+                Original StreamSets Pipeline
+                <span class="text-muted">{{ stage_summary | length }} stages</span>
+            </div>
+            <div class="pane-body">
+                <h2>Stage Mapping Summary</h2>
+                <table class="stage-table">
+                    <tr style="background:#f9f9f9;">
+                        <th style="padding:6px 8px;">Instance</th>
+                        <th style="padding:6px 8px;">Stage</th>
+                        <th style="padding:6px 8px;">Databricks</th>
+                        <th style="padding:6px 8px;">Conf</th>
+                    </tr>
+                    {% for s in stage_summary %}
+                    <tr>
+                        <td>{{ s.instance_name }}</td>
+                        <td class="text-muted">{{ s.stage_name }}</td>
+                        <td>{{ s.databricks_label }}</td>
+                        <td><span class="conf-{{ s.confidence }}">{{ s.confidence }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </table>
+                <hr style="margin:16px 0; border:none; border-top:1px solid #eee;">
+                <h2>Raw Pipeline JSON</h2>
+                <pre>{{ original_json }}</pre>
+            </div>
+        </div>
+
+        <!-- Right pane: generated Databricks code -->
+        <div class="pane">
+            <div class="pane-header">
+                Generated Databricks Code
+                {% if record.current_artifact %}
+                    <a href="/pipelines/{{ record.pipeline_id }}/artifact" class="btn" style="background:#e5e7eb; color:#374151; font-size:11px; padding:3px 8px;">Download</a>
+                {% endif %}
+            </div>
+            <div class="pane-body">
+                {% if record.current_artifact %}
+                    {% if record.current_artifact.warnings %}
+                    <div style="background:#fef3c7; border:1px solid #fbbf24; border-radius:6px; padding:12px; margin-bottom:12px;">
+                        <strong style="font-size:12px;">⚠ Warnings ({{ record.current_artifact.warnings | length }})</strong>
+                        <ul style="font-size:12px; margin-top:6px; padding-left:16px;">
+                            {% for w in record.current_artifact.warnings %}<li>{{ w }}</li>{% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
+                    {% if record.current_artifact.unmapped_stages %}
+                    <div style="background:#fee2e2; border:1px solid #fca5a5; border-radius:6px; padding:12px; margin-bottom:12px;">
+                        <strong style="font-size:12px;">✗ Unmapped Stages</strong>
+                        <ul style="font-size:12px; margin-top:6px; padding-left:16px;">
+                            {% for s in record.current_artifact.unmapped_stages %}<li>{{ s }}</li>{% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
+                    <pre>{{ record.current_artifact.content }}</pre>
+                    <details style="margin-top:12px;">
+                        <summary style="font-size:12px; cursor:pointer; color:#6b7280;">Agent Reasoning</summary>
+                        <div style="font-size:12px; color:#374151; margin-top:8px; padding:8px; background:#f9f9f9; border-radius:4px;">
+                            {{ record.current_artifact.agent_reasoning }}
+                        </div>
+                    </details>
+                {% else %}
+                    <div style="color:#9ca3af; text-align:center; padding:40px;">No artifact generated yet</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Action bar -->
+    {% if record.current_artifact %}
+    <div class="action-bar">
+        <div style="flex:1; min-width:300px;">
+            <label style="font-size:12px; font-weight:600; display:block; margin-bottom:6px;">
+                Feedback (required for Request Changes)
+            </label>
+            <textarea id="feedback" rows="3" placeholder="Describe what needs to change..."></textarea>
+            <div style="font-size:11px; color:#9ca3af; margin-top:4px;">
+                Reviewer ID: <input id="reviewer_id" value="reviewer" style="border:1px solid #ddd; padding:2px 6px; border-radius:4px; font-size:11px; width:120px;">
+            </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:8px; min-width:160px;">
+            <button onclick="submitDecision('approve')" class="btn btn-green">✓ Approve</button>
+            <button onclick="submitDecision('request_changes')" class="btn btn-yellow">↺ Request Changes</button>
+            <button onclick="submitDecision('escalate')" class="btn btn-purple">↑ Escalate</button>
+            <button onclick="submitDecision('reject')" class="btn btn-red">✗ Reject</button>
+        </div>
+        <div id="result-msg" style="font-size:13px;"></div>
+    </div>
+    {% endif %}
+</div>
+<script>
+async function submitDecision(decision) {
+    const feedback = document.getElementById('feedback')?.value || '';
+    const reviewer_id = document.getElementById('reviewer_id')?.value || 'reviewer';
+    if (decision === 'request_changes' && !feedback.trim()) {
+        alert('Please provide feedback before requesting changes.');
+        return;
+    }
+    const resp = await fetch('/pipelines/{{ record.pipeline_id }}/decision', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({decision, feedback, reviewer_id})
+    });
+    const data = await resp.json();
+    const msg = document.getElementById('result-msg');
+    if (resp.ok) {
+        msg.innerHTML = '<span style="color:#10b981; font-weight:600;">✓ ' + data.status + '</span>';
+        if (decision === 'approve') setTimeout(() => location.href = '/pipelines/', 1000);
+        if (decision === 'request_changes') msg.innerHTML += ' — Re-migration queued in background.';
+    } else {
+        msg.innerHTML = '<span style="color:#ef4444;">Error: ' + (data.detail || 'Unknown') + '</span>';
+    }
+}
+</script>
+{% endblock %}

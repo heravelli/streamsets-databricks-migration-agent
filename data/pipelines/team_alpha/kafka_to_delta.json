@@ -1,0 +1,47 @@
+{
+  "pipelineId": "pipeline-kafka-001",
+  "title": "Kafka Orders to Delta Lake",
+  "description": "Reads order events from Kafka, validates and enriches, writes to Delta",
+  "executionMode": "CONTINUOUS",
+  "stages": [
+    {
+      "instanceName": "KafkaConsumer_01",
+      "stageName": "com.streamsets.pipeline.stage.origin.kafka.KafkaDSource",
+      "library": "streamsets-datacollector-kafka-lib",
+      "uiInfo": {"stageType": "SOURCE"},
+      "inputLanes": [],
+      "outputLanes": ["KafkaConsumer_01OutputLane0"],
+      "eventLanes": [],
+      "configuration": [
+        {"name": "kafkaConfigBean.metadataBrokerList", "value": "kafka:9092"},
+        {"name": "kafkaConfigBean.topic", "value": "orders"},
+        {"name": "kafkaConfigBean.kafkaAutoOffsetReset", "value": "EARLIEST"}
+      ]
+    },
+    {
+      "instanceName": "FieldTypeConverter_01",
+      "stageName": "com.streamsets.pipeline.stage.processor.fieldtypeconverter.FieldTypeConverterDProcessor",
+      "library": "streamsets-datacollector-basic-lib",
+      "uiInfo": {"stageType": "PROCESSOR"},
+      "inputLanes": ["KafkaConsumer_01OutputLane0"],
+      "outputLanes": ["FieldTypeConverter_01OutputLane0"],
+      "eventLanes": [],
+      "configuration": [
+        {"name": "conversions", "value": [{"fields": ["/order_id"], "targetType": "LONG"}]}
+      ]
+    },
+    {
+      "instanceName": "HiveMetastore_01",
+      "stageName": "com.streamsets.pipeline.stage.destination.hive.HiveMetastoreDTarget",
+      "library": "streamsets-datacollector-hive-lib",
+      "uiInfo": {"stageType": "TARGET"},
+      "inputLanes": ["FieldTypeConverter_01OutputLane0"],
+      "outputLanes": [],
+      "eventLanes": [],
+      "configuration": [
+        {"name": "conf.dbNameEL", "value": "orders_db"},
+        {"name": "conf.tableNameEL", "value": "raw_orders"}
+      ]
+    }
+  ]
+}

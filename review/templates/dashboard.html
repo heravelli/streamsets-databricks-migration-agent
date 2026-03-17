@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Migration Dashboard{% endblock %}
+{% block content %}
+<div class="container">
+    <h1>Migration Dashboard</h1>
+
+    <div class="card" style="display:flex; gap:32px; flex-wrap:wrap; margin-bottom:24px;">
+        <div>
+            <div style="font-size:32px; font-weight:700; color:#10b981;">{{ overall.approved }}</div>
+            <div class="text-muted">Approved</div>
+        </div>
+        <div>
+            <div style="font-size:32px; font-weight:700; color:#f59e0b;">{{ overall.total - overall.approved }}</div>
+            <div class="text-muted">Remaining</div>
+        </div>
+        <div>
+            <div style="font-size:32px; font-weight:700; color:#1b1b2f;">{{ overall.total }}</div>
+            <div class="text-muted">Total Pipelines</div>
+        </div>
+        <div>
+            <div style="font-size:32px; font-weight:700; color:#6366f1;">{{ overall.completion_pct }}%</div>
+            <div class="text-muted">Complete</div>
+        </div>
+        <div>
+            <div style="font-size:32px; font-weight:700; color:#374151;">{{ overall.teams }}</div>
+            <div class="text-muted">Teams</div>
+        </div>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Team</th>
+                <th>Total</th>
+                <th>Pending</th>
+                <th>In Review</th>
+                <th>Approved</th>
+                <th>Escalated</th>
+                <th>Failed</th>
+                <th>Progress</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for team in teams %}
+            <tr>
+                <td><strong>{{ team.team_name }}</strong></td>
+                <td>{{ team.total }}</td>
+                <td><span class="badge badge-gray">{{ team.pending }}</span></td>
+                <td><span class="badge badge-yellow">{{ team.in_review }}</span></td>
+                <td><span class="badge badge-green">{{ team.approved }}</span></td>
+                <td><span class="badge badge-purple">{{ team.escalated }}</span></td>
+                <td><span class="badge badge-red">{{ team.failed }}</span></td>
+                <td>
+                    <div style="background:#e5e7eb; border-radius:4px; height:8px; width:120px;">
+                        <div style="background:{% if team.completion_pct >= 80 %}#10b981{% elif team.completion_pct >= 40 %}#f59e0b{% else %}#ef4444{% endif %}; width:{{ team.completion_pct }}%; height:100%; border-radius:4px;"></div>
+                    </div>
+                    <span class="text-muted">{{ team.completion_pct }}%</span>
+                </td>
+                <td>
+                    <a href="/pipelines/?team={{ team.team_name }}" class="btn btn-gray" style="font-size:11px; padding:4px 10px;">View</a>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -112,6 +112,25 @@ class TestExportCLIApprovedOnly:
         for pid in ["pipe-001", "pipe-002", "pipe-003"]:
             assert (export_dir / "team_alpha" / pid / "pipeline.py").exists()
 
+    def test_export_to_same_dir_as_output_fails_with_clear_error(self):
+        """Exporting to OUTPUT_DIR itself must fail clearly, not crash with SameFileError."""
+        _register(self.state_file, "pipe-approved", PipelineStatus.APPROVED, self.output_dir)
+
+        result = runner.invoke(app, ["export", str(self.output_dir)])
+
+        assert result.exit_code == 1
+        assert "cannot be inside the output directory" in result.output
+
+    def test_export_to_subdir_of_output_fails(self):
+        """A subdirectory of OUTPUT_DIR is also rejected."""
+        _register(self.state_file, "pipe-approved", PipelineStatus.APPROVED, self.output_dir)
+
+        subdir = self.output_dir / "deploy"
+        result = runner.invoke(app, ["export", str(subdir)])
+
+        assert result.exit_code == 1
+        assert "cannot be inside the output directory" in result.output
+
     def test_export_zip_excludes_non_approved(self, tmp_path):
         _register(self.state_file, "pipe-approved", PipelineStatus.APPROVED, self.output_dir)
         _register(self.state_file, "pipe-pending", PipelineStatus.PENDING, self.output_dir)

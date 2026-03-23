@@ -208,8 +208,8 @@ cp .env.example .env
 mkdir -p data/pipelines/my_team
 cp /path/to/exports/*.json data/pipelines/my_team/
 
-# 2. Ingest pipelines
-uv run migrate ingest data/pipelines/my_team/ --team my_team
+# 2. Ingest pipelines (team name inferred from directory name)
+uv run migrate ingest data/pipelines/my_team/
 
 # 3. Run the migration agent
 uv run migrate run --team my_team --concurrency 3
@@ -226,8 +226,9 @@ uv run migrate serve
 
 | Command | Description |
 |---|---|
-| `migrate ingest <dir> --team <name>` | Parse exports and register in migration state |
-| `migrate ingest <dir> --team <name> --dry-run` | Parse only, don't write state |
+| `migrate ingest <dir>` | Parse exports — team name inferred from directory name |
+| `migrate ingest <dir> --team <name>` | Parse exports with explicit team name override |
+| `migrate ingest <dir> --dry-run` | Parse only, don't write state |
 | `migrate run --team <name>` | Run agent on all pending pipelines for a team |
 | `migrate run --pipeline-id <id>` | Run agent on a single pipeline |
 | `migrate run --all --concurrency 10` | Run all 2000 pipelines in parallel |

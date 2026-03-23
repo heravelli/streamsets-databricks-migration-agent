@@ -26,6 +26,15 @@ import json
 from pathlib import Path
 
 from agent.claude_client import ClaudeClient
+
+# Deterministic confidence values matching the system prompt definition
+_CONFIDENCE_VALUES: dict[str, float] = {
+    "exact": 1.0,
+    "high": 0.8,
+    "medium": 0.5,
+    "low": 0.2,
+    "unsupported": 0.0,
+}
 from agent.context_builder import build_migration_prompt
 from agent.tools import classify_pipeline, emit_migration_result, lookup_stage_mapping
 from catalog.stage_catalog import StageCatalog
@@ -84,6 +93,7 @@ class MigrationAgent:
         messages: list[dict] = [{"role": "user", "content": context}]
         final_result: dict | None = None
         _nudged = False  # send at most one reminder to call emit_migration_result
+        self._lookup_confidences: list[float] = []  # collected during dispatch; reset per pipeline
 
         for iteration in range(20):  # max iterations guard — prevents runaway LLM loops
             # ── LLM CALL ──────────────────────────────────────────────────────
@@ -158,6 +168,9 @@ class MigrationAgent:
                     stage_config_summary=inp.get("stage_config_summary", {}),
                     catalog=self.catalog,
                 )
+                # Track confidence for deterministic scoring — not left to the LLM
+                conf_str = result.get("confidence", "unsupported")
+                self._lookup_confidences.append(_CONFIDENCE_VALUES.get(conf_str, 0.0))
             elif name == "classify_pipeline":
                 # [NO LLM] Deterministic classification heuristic — no AI call made here
                 result = classify_pipeline.execute(**inp)
@@ -198,12 +211,22 @@ class MigrationAgent:
         suffix = {"dlt": "py", "job": "py", "notebook": "py"}.get(fmt_str, "py")
         filename = f"pipeline.{suffix}"
 
+        # Compute confidence deterministically from catalog lookup results.
+        # The LLM's self-reported confidence_score is ignored — it varies between
+        # runs for the same pipeline. The catalog confidence levels are fixed.
+        if self._lookup_confidences:
+            confidence = round(
+                sum(self._lookup_confidences) / len(self._lookup_confidences), 2
+            )
+        else:
+            confidence = float(result.get("confidence_score", 0.0))
+
         return GeneratedArtifact(
             artifact_type=fmt,
             filename=filename,
             content=result.get("python_code", ""),
             agent_reasoning=result.get("agent_reasoning", ""),
-            confidence_score=float(result.get("confidence_score", 0.0)),
+            confidence_score=confidence,
             unmapped_stages=result.get("unmapped_stages", []),
             warnings=result.get("warnings", []),
         )

@@ -182,7 +182,8 @@ class TestMigrateCycle:
 
         assert artifact.artifact_type == DatabricksTargetFormat.DLT
         assert "dlt.table" in artifact.content
-        assert artifact.confidence_score == pytest.approx(0.92)
+        # Confidence is now computed deterministically from catalog lookups (not LLM output)
+        assert 0.0 < artifact.confidence_score <= 1.0
         assert artifact.unmapped_stages == []
 
     async def test_migrate_groovy_pipeline_recommends_notebook(

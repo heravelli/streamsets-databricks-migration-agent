@@ -1,9 +1,12 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
 # Install uv
 RUN pip install --no-cache-dir uv
+
+# Use system Python (python:3.12-slim) — avoids uv downloading its own Python at runtime
+ENV UV_SYSTEM_PYTHON=1
 
 # Copy dependency files first for layer caching
 COPY pyproject.toml uv.lock* ./

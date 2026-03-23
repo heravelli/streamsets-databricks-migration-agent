@@ -108,6 +108,9 @@ def _anthropic_messages_to_openai(messages: list[dict], system: str) -> list[dic
             text_parts = []
             tool_calls = []
             for block in content:
+                # Use isinstance guard before .get() — Python evaluates all
+                # function arguments eagerly, so getattr(obj, k, obj.get(k))
+                # would call obj.get(k) even when obj has the attribute.
                 if isinstance(block, dict):
                     btype = block.get("type")
                     name  = block.get("name")

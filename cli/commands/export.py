@@ -41,10 +41,17 @@ def export(
     ]
 
     if not approved:
-        console.print("[yellow]No approved pipelines to export[/yellow]")
+        console.print(
+            "[yellow]No approved pipelines to export.[/yellow]\n"
+            "[dim]Pipelines must be approved via the review portal before export.\n"
+            "Run [bold]uv run migrate status[/bold] to check pipeline states.\n"
+            "Run [bold]uv run migrate serve[/bold] then open http://localhost:8000 to approve.[/dim]"
+        )
         raise typer.Exit(0)
 
     src_root = settings.output_dir
+    console.print(f"[dim]Source artifacts root: {src_root.resolve()}[/dim]")
+
     # Guard: destination must not be the same as (or inside) the source output dir
     try:
         output_dir.resolve().relative_to(src_root.resolve())
@@ -61,16 +68,26 @@ def export(
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     exported = 0
+    skipped = 0
     for record in approved:
         src = src_root / record.team_name / record.pipeline_id
         if not src.exists():
-            console.print(f"[yellow]Missing artifact for {record.pipeline_id}, skipping[/yellow]")
+            console.print(
+                f"[yellow]⚠ Missing artifact directory for {record.pipeline_id} "
+                f"(expected: {src}) — skipping[/yellow]"
+            )
+            skipped += 1
             continue
         dest = tmp_dir / record.team_name / record.pipeline_id
         dest.mkdir(parents=True, exist_ok=True)
+        # Only copy files (not subdirs) to avoid shutil.copy2 failing on directories
         for f in src.iterdir():
-            shutil.copy2(f, dest / f.name)
+            if f.is_file():
+                shutil.copy2(f, dest / f.name)
         exported += 1
+
+    if skipped:
+        console.print(f"[yellow]⚠ {skipped} pipeline(s) had no artifact on disk — were they migrated?[/yellow]")
 
     if fmt == "zip":
         zip_path = output_dir

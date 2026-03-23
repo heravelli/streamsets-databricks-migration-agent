@@ -1,166 +1,173 @@
 {
-  "pipelineId": "pipeline-multikafka-enrich-001",
-  "title": "Multi-Kafka Orders Enrichment Pipeline",
-  "description": "Reads from multiple Kafka topics (orders + customer events), applies expression-based enrichment, type conversion, field renaming, and a Groovy-based custom scoring function before writing to Delta Lake.",
-  "executionMode": "CONTINUOUS",
-  "stages": [
-    {
-      "instanceName": "MultiKafkaConsumer_01",
-      "stageName": "com.streamsets.pipeline.stage.origin.multikafka.MultiKafkaDSource",
-      "library": "streamsets-datacollector-apache-kafka_2_7-lib",
-      "uiInfo": { "stageType": "SOURCE" },
+  "pipelineConfig": {
+    "schemaVersion": 4,
+    "version": 5,
+    "pipelineId": "pipeline-multikafka-enrich-001",
+    "uuid": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+    "title": "Multi-Kafka Orders Enrichment Pipeline",
+    "description": "Reads from multiple Kafka topics (orders + customer events), applies expression-based enrichment, type conversion, field renaming, and a Groovy-based custom scoring function before writing to Delta Lake.",
+    "configuration": [
+      {"name": "executionMode",     "value": "CONTINUOUS"},
+      {"name": "deliveryGuarantee", "value": "AT_LEAST_ONCE"},
+      {"name": "shouldRetry",       "value": true},
+      {"name": "retryAttempts",     "value": -1}
+    ],
+    "stages": [
+      {
+        "instanceName": "MultiKafkaConsumer_01",
+        "stageName": "com.streamsets.pipeline.stage.origin.multikafka.MultiKafkaDSource",
+        "stageVersion": "1",
+        "library": "streamsets-datacollector-apache-kafka_2_7-lib",
+        "uiInfo": {"stageType": "SOURCE", "label": "Multi Kafka Consumer", "xPos": 60, "yPos": 50},
+        "inputLanes": [],
+        "outputLanes": ["MultiKafkaConsumer_01OutputLane0"],
+        "eventLanes": [],
+        "configuration": [
+          {"name": "conf.brokerURI",            "value": "kafka-broker-1:9092,kafka-broker-2:9092"},
+          {"name": "conf.topicList",             "value": ["orders", "customer_events"]},
+          {"name": "conf.consumerGroup",         "value": "migration-agent-consumer"},
+          {"name": "conf.kafkaAutoOffsetReset",  "value": "EARLIEST"},
+          {"name": "conf.dataFormat",            "value": "JSON"},
+          {"name": "conf.maxBatchSize",          "value": 1000},
+          {"name": "conf.maxWaitTime",           "value": 2000}
+        ]
+      },
+      {
+        "instanceName": "ExpressionEvaluator_01",
+        "stageName": "com.streamsets.pipeline.stage.processor.expression.ExpressionDProcessor",
+        "stageVersion": "2",
+        "library": "streamsets-datacollector-basic-lib",
+        "uiInfo": {"stageType": "PROCESSOR", "label": "Expression Evaluator", "xPos": 280, "yPos": 50},
+        "inputLanes": ["MultiKafkaConsumer_01OutputLane0"],
+        "outputLanes": ["ExpressionEvaluator_01OutputLane0"],
+        "eventLanes": [],
+        "configuration": [
+          {
+            "name": "expressionProcessorConfigs",
+            "value": [
+              {"fieldToSet": "/ingestion_timestamp", "expression": "${time:now()}"},
+              {"fieldToSet": "/pipeline_name",       "expression": "${pipeline:name()}"},
+              {"fieldToSet": "/order_total_usd",     "expression": "${record:value('/quantity') * record:value('/unit_price')}"},
+              {"fieldToSet": "/is_high_value",       "expression": "${record:value('/order_total_usd') > 1000}"}
+            ]
+          },
+          {"name": "headerAttributeConfigs", "value": []}
+        ]
+      },
+      {
+        "instanceName": "FieldTypeConverter_01",
+        "stageName": "com.streamsets.pipeline.stage.processor.fieldtypeconverter.FieldTypeConverterDProcessor",
+        "stageVersion": "3",
+        "library": "streamsets-datacollector-basic-lib",
+        "uiInfo": {"stageType": "PROCESSOR", "label": "Field Type Converter", "xPos": 500, "yPos": 50},
+        "inputLanes": ["ExpressionEvaluator_01OutputLane0"],
+        "outputLanes": ["FieldTypeConverter_01OutputLane0"],
+        "eventLanes": [],
+        "configuration": [
+          {
+            "name": "fieldTypeConverterConfigs",
+            "value": [
+              {"fields": ["/order_id"],                          "targetType": "LONG",     "dataLocale": "en_US"},
+              {"fields": ["/customer_id"],                       "targetType": "LONG",     "dataLocale": "en_US"},
+              {"fields": ["/order_total_usd", "/unit_price"],    "targetType": "DOUBLE",   "dataLocale": "en_US", "scale": 2},
+              {"fields": ["/order_date"],                        "targetType": "DATETIME", "dateFormat": "YYYY-MM-DD"},
+              {"fields": ["/is_high_value"],                     "targetType": "BOOLEAN"}
+            ]
+          }
+        ]
+      },
+      {
+        "instanceName": "FieldRenamer_01",
+        "stageName": "com.streamsets.pipeline.stage.processor.fieldrenamer.FieldRenamerDProcessor",
+        "stageVersion": "1",
+        "library": "streamsets-datacollector-basic-lib",
+        "uiInfo": {"stageType": "PROCESSOR", "label": "Field Renamer", "xPos": 720, "yPos": 50},
+        "inputLanes": ["FieldTypeConverter_01OutputLane0"],
+        "outputLanes": ["FieldRenamer_01OutputLane0"],
+        "eventLanes": [],
+        "configuration": [
+          {
+            "name": "fieldRenamerConfigs",
+            "value": [
+              {"fromFieldExpression": "/order_id",            "toFieldExpression": "/order_key"},
+              {"fromFieldExpression": "/customer_id",         "toFieldExpression": "/customer_key"},
+              {"fromFieldExpression": "/order_date",          "toFieldExpression": "/event_date"},
+              {"fromFieldExpression": "/order_total_usd",     "toFieldExpression": "/total_amount_usd"},
+              {"fromFieldExpression": "/ingestion_timestamp", "toFieldExpression": "/ingest_ts"}
+            ]
+          },
+          {"name": "onStagePreConditionFailure", "value": "CONTINUE"}
+        ]
+      },
+      {
+        "instanceName": "GroovyEvaluator_01",
+        "stageName": "com.streamsets.pipeline.stage.processor.groovy.GroovyDProcessor",
+        "stageVersion": "2",
+        "library": "streamsets-datacollector-groovy_2_4-lib",
+        "uiInfo": {"stageType": "PROCESSOR", "label": "Groovy Evaluator", "xPos": 940, "yPos": 50},
+        "inputLanes": ["FieldRenamer_01OutputLane0"],
+        "outputLanes": ["GroovyEvaluator_01OutputLane0"],
+        "eventLanes": [],
+        "configuration": [
+          {
+            "name": "groovyScript",
+            "value": "for (record in records) {\n  try {\n    def totalAmount = record.value['total_amount_usd'] ?: 0.0\n    def eventType   = record.value['event_type'] ?: 'UNKNOWN'\n    def baseScore   = totalAmount > 5000 ? 90 : totalAmount > 1000 ? 60 : totalAmount > 100 ? 30 : 10\n    def eventBonus  = (eventType == 'REFUND') ? 20 : (eventType == 'CHARGEBACK') ? 40 : 0\n    def riskScore   = Math.min(baseScore + eventBonus, 100)\n    record.value['risk_score'] = riskScore\n    record.value['risk_tier']  = riskScore >= 80 ? 'HIGH' : riskScore >= 50 ? 'MEDIUM' : 'LOW'\n    output.write(record)\n  } catch (Exception e) {\n    error.write(record, e.toString())\n  }\n}"
+          },
+          {"name": "initScript",      "value": ""},
+          {"name": "destroyScript",   "value": ""},
+          {"name": "processingMode",  "value": "BATCH"}
+        ]
+      },
+      {
+        "instanceName": "HiveMetastore_01",
+        "stageName": "com.streamsets.pipeline.stage.destination.hive.HiveMetastoreDTarget",
+        "stageVersion": "2",
+        "library": "streamsets-datacollector-hive-lib",
+        "uiInfo": {"stageType": "TARGET", "label": "Hive Metastore", "xPos": 1160, "yPos": 50},
+        "inputLanes": ["GroovyEvaluator_01OutputLane0"],
+        "outputLanes": [],
+        "eventLanes": [],
+        "configuration": [
+          {"name": "conf.hiveConfigBean.hiveJDBCUrl", "value": "jdbc:hive2://hive:10000/default"},
+          {"name": "conf.dbNameEL",                   "value": "orders_db"},
+          {"name": "conf.tableNameEL",                "value": "enriched_orders"},
+          {"name": "conf.partitionConfig",            "value": [{"name": "event_date", "valueType": "DATE"}]},
+          {"name": "conf.storedAsAvro",               "value": false}
+        ]
+      }
+    ],
+    "errorStage": {
+      "instanceName": "ToError_01",
+      "stageName": "com.streamsets.pipeline.stage.destination.trash.ToErrorDTarget",
+      "stageVersion": "1",
+      "library": "streamsets-datacollector-basic-lib",
+      "uiInfo": {"stageType": "TARGET"},
       "inputLanes": [],
-      "outputLanes": ["MultiKafkaConsumer_01OutputLane0"],
-      "eventLanes": [],
-      "configuration": [
-        { "name": "conf.brokerURI", "value": "kafka-broker-1:9092,kafka-broker-2:9092" },
-        { "name": "conf.topicList", "value": ["orders", "customer_events"] },
-        { "name": "conf.consumerGroup", "value": "migration-agent-consumer" },
-        { "name": "conf.kafkaAutoOffsetReset", "value": "EARLIEST" },
-        { "name": "conf.dataFormat", "value": "JSON" },
-        { "name": "conf.maxBatchSize", "value": 1000 },
-        { "name": "conf.maxWaitTime", "value": 2000 }
-      ]
-    },
-    {
-      "instanceName": "ExpressionEvaluator_01",
-      "stageName": "com.streamsets.pipeline.stage.processor.expression.ExpressionDProcessor",
-      "library": "streamsets-datacollector-basic-lib",
-      "uiInfo": { "stageType": "PROCESSOR" },
-      "inputLanes": ["MultiKafkaConsumer_01OutputLane0"],
-      "outputLanes": ["ExpressionEvaluator_01OutputLane0"],
-      "eventLanes": [],
-      "configuration": [
-        {
-          "name": "expressionProcessorConfigs",
-          "value": [
-            {
-              "fieldToSet": "/ingestion_timestamp",
-              "expression": "${time:now()}"
-            },
-            {
-              "fieldToSet": "/pipeline_name",
-              "expression": "${pipeline:name()}"
-            },
-            {
-              "fieldToSet": "/order_total_usd",
-              "expression": "${record:value('/quantity') * record:value('/unit_price')}"
-            },
-            {
-              "fieldToSet": "/is_high_value",
-              "expression": "${record:value('/order_total_usd') > 1000}"
-            }
-          ]
-        },
-        { "name": "headerAttributeConfigs", "value": [] }
-      ]
-    },
-    {
-      "instanceName": "FieldTypeConverter_01",
-      "stageName": "com.streamsets.pipeline.stage.processor.fieldtypeconverter.FieldTypeConverterDProcessor",
-      "library": "streamsets-datacollector-basic-lib",
-      "uiInfo": { "stageType": "PROCESSOR" },
-      "inputLanes": ["ExpressionEvaluator_01OutputLane0"],
-      "outputLanes": ["FieldTypeConverter_01OutputLane0"],
-      "eventLanes": [],
-      "configuration": [
-        {
-          "name": "fieldTypeConverterConfigs",
-          "value": [
-            {
-              "fields": ["/order_id"],
-              "targetType": "LONG",
-              "dataLocale": "en_US"
-            },
-            {
-              "fields": ["/customer_id"],
-              "targetType": "LONG",
-              "dataLocale": "en_US"
-            },
-            {
-              "fields": ["/order_total_usd", "/unit_price"],
-              "targetType": "DOUBLE",
-              "dataLocale": "en_US",
-              "scale": 2
-            },
-            {
-              "fields": ["/order_date"],
-              "targetType": "DATETIME",
-              "dateFormat": "YYYY-MM-DD",
-              "dataLocale": "en_US"
-            },
-            {
-              "fields": ["/is_high_value"],
-              "targetType": "BOOLEAN"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "instanceName": "FieldRenamer_01",
-      "stageName": "com.streamsets.pipeline.stage.processor.fieldrenamer.FieldRenamerDProcessor",
-      "library": "streamsets-datacollector-basic-lib",
-      "uiInfo": { "stageType": "PROCESSOR" },
-      "inputLanes": ["FieldTypeConverter_01OutputLane0"],
-      "outputLanes": ["FieldRenamer_01OutputLane0"],
-      "eventLanes": [],
-      "configuration": [
-        {
-          "name": "fieldRenamerConfigs",
-          "value": [
-            { "fromFieldExpression": "/order_id",           "toFieldExpression": "/order_key" },
-            { "fromFieldExpression": "/customer_id",        "toFieldExpression": "/customer_key" },
-            { "fromFieldExpression": "/order_date",         "toFieldExpression": "/event_date" },
-            { "fromFieldExpression": "/order_total_usd",    "toFieldExpression": "/total_amount_usd" },
-            { "fromFieldExpression": "/ingestion_timestamp","toFieldExpression": "/ingest_ts" }
-          ]
-        },
-        { "name": "onStagePreConditionFailure", "value": "CONTINUE" }
-      ]
-    },
-    {
-      "instanceName": "GroovyEvaluator_01",
-      "stageName": "com.streamsets.pipeline.stage.processor.groovy.GroovyDProcessor",
-      "library": "streamsets-datacollector-groovy_2_4-lib",
-      "uiInfo": { "stageType": "PROCESSOR" },
-      "inputLanes": ["FieldRenamer_01OutputLane0"],
-      "outputLanes": ["GroovyEvaluator_01OutputLane0"],
-      "eventLanes": [],
-      "configuration": [
-        {
-          "name": "groovyScript",
-          "value": "for (record in records) {\n  try {\n    def totalAmount = record.value['total_amount_usd'] ?: 0.0\n    def isHighValue  = record.value['is_high_value'] ?: false\n    def eventType    = record.value['event_type'] ?: 'UNKNOWN'\n\n    // Simple risk scoring: weighted combination of value + event type\n    def baseScore = totalAmount > 5000 ? 90 : totalAmount > 1000 ? 60 : totalAmount > 100 ? 30 : 10\n    def eventBonus = (eventType == 'REFUND') ? 20 : (eventType == 'CHARGEBACK') ? 40 : 0\n    def riskScore  = Math.min(baseScore + eventBonus, 100)\n\n    record.value['risk_score']  = riskScore\n    record.value['risk_tier']   = riskScore >= 80 ? 'HIGH' : riskScore >= 50 ? 'MEDIUM' : 'LOW'\n\n    output.write(record)\n  } catch (Exception e) {\n    log.error('Groovy scoring error: {}', e.toString())\n    error.write(record, e.toString())\n  }\n}"
-        },
-        { "name": "initScript", "value": "" },
-        { "name": "destroyScript", "value": "" },
-        { "name": "processingMode", "value": "BATCH" }
-      ]
-    },
-    {
-      "instanceName": "HiveMetastore_01",
-      "stageName": "com.streamsets.pipeline.stage.destination.hive.HiveMetastoreDTarget",
-      "library": "streamsets-datacollector-hive-lib",
-      "uiInfo": { "stageType": "TARGET" },
-      "inputLanes": ["GroovyEvaluator_01OutputLane0"],
       "outputLanes": [],
       "eventLanes": [],
-      "configuration": [
-        { "name": "conf.dbNameEL",    "value": "orders_db" },
-        { "name": "conf.tableNameEL", "value": "enriched_orders" },
-        { "name": "conf.partitionConfig", "value": [{ "name": "event_date", "valueType": "DATE" }] },
-        { "name": "conf.storedAsAvro", "value": false }
-      ]
+      "configuration": []
+    },
+    "statsAggregatorStage": {},
+    "startEventStages": [],
+    "stopEventStages": [],
+    "metadata": {
+      "labels": ["kafka", "enrichment", "groovy", "streaming"],
+      "lastModified": 1710001000000
+    },
+    "info": {
+      "pipelineId": "pipeline-multikafka-enrich-001",
+      "title": "Multi-Kafka Orders Enrichment Pipeline",
+      "lastModifier": "svc-streamsets"
     }
-  ],
-  "errorStage": {
-    "instanceName": "ToError_01",
-    "stageName": "com.streamsets.pipeline.stage.destination.trash.ToErrorDTarget",
-    "library": "streamsets-datacollector-basic-lib",
-    "uiInfo": { "stageType": "TARGET" },
-    "inputLanes": [],
-    "outputLanes": [],
-    "eventLanes": [],
-    "configuration": []
+  },
+  "pipelineRules": {
+    "schemaVersion": 4,
+    "version": 1,
+    "pipelineId": "pipeline-multikafka-enrich-001",
+    "metricsRuleDefinitions": [],
+    "dataRuleDefinitions": [],
+    "driftRuleDefinitions": [],
+    "emailIds": [],
+    "ruleIssues": []
   }
 }

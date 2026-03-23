@@ -1,47 +1,119 @@
 {
-  "pipelineId": "pipeline-kafka-001",
-  "title": "Kafka Orders to Delta Lake",
-  "description": "Reads order events from Kafka, validates and enriches, writes to Delta",
-  "executionMode": "CONTINUOUS",
-  "stages": [
-    {
-      "instanceName": "KafkaConsumer_01",
-      "stageName": "com.streamsets.pipeline.stage.origin.kafka.KafkaDSource",
-      "library": "streamsets-datacollector-kafka-lib",
-      "uiInfo": {"stageType": "SOURCE"},
-      "inputLanes": [],
-      "outputLanes": ["KafkaConsumer_01OutputLane0"],
-      "eventLanes": [],
-      "configuration": [
-        {"name": "kafkaConfigBean.metadataBrokerList", "value": "kafka:9092"},
-        {"name": "kafkaConfigBean.topic", "value": "orders"},
-        {"name": "kafkaConfigBean.kafkaAutoOffsetReset", "value": "EARLIEST"}
-      ]
-    },
-    {
-      "instanceName": "FieldTypeConverter_01",
-      "stageName": "com.streamsets.pipeline.stage.processor.fieldtypeconverter.FieldTypeConverterDProcessor",
-      "library": "streamsets-datacollector-basic-lib",
-      "uiInfo": {"stageType": "PROCESSOR"},
-      "inputLanes": ["KafkaConsumer_01OutputLane0"],
-      "outputLanes": ["FieldTypeConverter_01OutputLane0"],
-      "eventLanes": [],
-      "configuration": [
-        {"name": "conversions", "value": [{"fields": ["/order_id"], "targetType": "LONG"}]}
-      ]
-    },
-    {
-      "instanceName": "HiveMetastore_01",
-      "stageName": "com.streamsets.pipeline.stage.destination.hive.HiveMetastoreDTarget",
-      "library": "streamsets-datacollector-hive-lib",
+  "pipelineConfig": {
+    "schemaVersion": 4,
+    "version": 3,
+    "pipelineId": "kafka-to-delta-001",
+    "uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "title": "Kafka Orders to Delta Lake",
+    "description": "Reads order events from Kafka, validates and enriches, writes to Delta",
+    "configuration": [
+      {"name": "executionMode",       "value": "CONTINUOUS"},
+      {"name": "deliveryGuarantee",   "value": "AT_LEAST_ONCE"},
+      {"name": "shouldRetry",         "value": true},
+      {"name": "retryAttempts",       "value": -1}
+    ],
+    "stages": [
+      {
+        "instanceName": "KafkaConsumer_01",
+        "stageName": "com.streamsets.pipeline.stage.origin.kafka.KafkaDSource",
+        "stageVersion": "10",
+        "library": "streamsets-datacollector-apache-kafka_3_6-lib",
+        "uiInfo": {
+          "stageType": "SOURCE",
+          "label": "Kafka Consumer",
+          "xPos": 60,
+          "yPos": 50
+        },
+        "inputLanes": [],
+        "outputLanes": ["KafkaConsumer_01OutputLane0"],
+        "eventLanes": [],
+        "configuration": [
+          {"name": "kafkaConfigBean.metadataBrokerList", "value": "kafka-broker:9092"},
+          {"name": "kafkaConfigBean.topic",              "value": "orders"},
+          {"name": "kafkaConfigBean.consumerGroup",      "value": "sdc-orders-cg"},
+          {"name": "kafkaConfigBean.kafkaAutoOffsetReset","value": "EARLIEST"},
+          {"name": "kafkaConfigBean.produceSingleRecordPerMessage", "value": false}
+        ]
+      },
+      {
+        "instanceName": "FieldTypeConverter_01",
+        "stageName": "com.streamsets.pipeline.stage.processor.fieldtypeconverter.FieldTypeConverterDProcessor",
+        "stageVersion": "3",
+        "library": "streamsets-datacollector-basic-lib",
+        "uiInfo": {
+          "stageType": "PROCESSOR",
+          "label": "Field Type Converter",
+          "xPos": 280,
+          "yPos": 50
+        },
+        "inputLanes": ["KafkaConsumer_01OutputLane0"],
+        "outputLanes": ["FieldTypeConverter_01OutputLane0"],
+        "eventLanes": [],
+        "configuration": [
+          {
+            "name": "fieldTypeConverterConfigs",
+            "value": [
+              {"fields": ["/order_id"], "targetType": "LONG"},
+              {"fields": ["/amount"],   "targetType": "DECIMAL"},
+              {"fields": ["/ts"],       "targetType": "DATETIME", "dateFormat": "YYYY_MM_DD_HH_MM_SS"}
+            ]
+          }
+        ]
+      },
+      {
+        "instanceName": "HiveMetastore_01",
+        "stageName": "com.streamsets.pipeline.stage.destination.hive.HiveMetastoreDTarget",
+        "stageVersion": "2",
+        "library": "streamsets-datacollector-hive-lib",
+        "uiInfo": {
+          "stageType": "TARGET",
+          "label": "Hive Metastore",
+          "xPos": 500,
+          "yPos": 50
+        },
+        "inputLanes": ["FieldTypeConverter_01OutputLane0"],
+        "outputLanes": [],
+        "eventLanes": [],
+        "configuration": [
+          {"name": "conf.hiveConfigBean.hiveJDBCUrl", "value": "jdbc:hive2://hive:10000/default"},
+          {"name": "conf.dbNameEL",                   "value": "orders_db"},
+          {"name": "conf.tableNameEL",                "value": "raw_orders"},
+          {"name": "conf.partitionPathTemplate",      "value": "/dt=${YYYY()}-${MM()}-${DD()}"}
+        ]
+      }
+    ],
+    "errorStage": {
+      "instanceName": "WriteToBinFile_ErrorStage",
+      "stageName": "com.streamsets.pipeline.stage.destination.devnull.NullDTarget",
+      "stageVersion": "1",
+      "library": "streamsets-datacollector-dev-lib",
       "uiInfo": {"stageType": "TARGET"},
-      "inputLanes": ["FieldTypeConverter_01OutputLane0"],
+      "inputLanes": [],
       "outputLanes": [],
       "eventLanes": [],
-      "configuration": [
-        {"name": "conf.dbNameEL", "value": "orders_db"},
-        {"name": "conf.tableNameEL", "value": "raw_orders"}
-      ]
+      "configuration": []
+    },
+    "statsAggregatorStage": {},
+    "startEventStages": [],
+    "stopEventStages": [],
+    "metadata": {
+      "labels": ["kafka", "orders", "streaming"],
+      "lastModified": 1710000000000
+    },
+    "info": {
+      "pipelineId": "kafka-to-delta-001",
+      "title": "Kafka Orders to Delta Lake",
+      "lastModifier": "svc-streamsets"
     }
-  ]
+  },
+  "pipelineRules": {
+    "schemaVersion": 4,
+    "version": 1,
+    "pipelineId": "kafka-to-delta-001",
+    "metricsRuleDefinitions": [],
+    "dataRuleDefinitions": [],
+    "driftRuleDefinitions": [],
+    "emailIds": [],
+    "ruleIssues": []
+  }
 }

@@ -252,8 +252,14 @@ class GatewayClient:
         payload: dict = {
             "messages": _anthropic_messages_to_openai(messages, system),
             "tools": _anthropic_tools_to_openai(tools),
+            # "auto" string is valid OpenAI format; some strict gateways want the
+            # object form {"type": "auto"} — both are sent as "auto" here which
+            # all major Azure AI / LiteLLM / Apigee gateways accept.
             "tool_choice": "auto",
             "max_tokens": max_tokens,
+            # Explicitly disable streaming — enterprise gateways sometimes default
+            # to stream=true which returns SSE chunks our parser cannot handle.
+            "stream": False,
         }
         # Omit "model" from the body when it is already encoded in the URL path
         # (some gateways reject unknown body fields; others route by URL not body).
@@ -269,8 +275,21 @@ class GatewayClient:
                         resp.raise_for_status()
                     await asyncio.sleep(2 ** attempt * 5)
                     continue
-                resp.raise_for_status()
+                if not resp.is_success:
+                    # Surface the gateway error body so it is visible in logs
+                    # (gateway teams often put the real error message in the JSON body,
+                    #  not just the HTTP status line)
+                    try:
+                        err_body = resp.json()
+                    except Exception:
+                        err_body = resp.text
+                    raise RuntimeError(
+                        f"Gateway returned HTTP {resp.status_code} "
+                        f"for POST {self._completions_path}: {err_body}"
+                    )
                 return _openai_response_to_anthropic(resp.json())
+            except RuntimeError:
+                raise
             except httpx.HTTPStatusError as e:
                 if e.response.status_code >= 500 and attempt < 2:
                     await asyncio.sleep(2 ** attempt * 2)

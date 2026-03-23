@@ -45,26 +45,83 @@ Follow this exact sequence for EVERY pipeline:
 
 ## Code Generation Rules
 
-### DLT Pipelines
-- `import dlt` at the top
-- Each logical table as `@dlt.table()` or `@dlt.streaming_table()` decorated function
-- Use `dlt.apply_changes()` only if there is a CDC source
-- Use `spark.readStream` for streaming origins (Kafka, Event Hubs)
-- Use `dlt.expect_or_drop()` for data quality — replaces StreamSets error lane routing
+### Databricks Notebook Source Format (MANDATORY for ALL output types)
 
-### Databricks Jobs (Python scripts)
-- `from pyspark.sql import SparkSession` + `spark = SparkSession.builder.getOrCreate()`
-- Linear sequence of DataFrame transformations following pipeline topology
-- `if __name__ == "__main__":` guard
+Every generated file MUST be a valid Databricks notebook source file that imports
+directly into Databricks Repos or the Databricks workspace as a structured notebook.
+
+**Required structure — always follow this exactly:**
+
+```python
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # <Pipeline Title>
+# MAGIC Migrated from StreamSets | Team: <team> | Type: DLT | Confidence: <score>
+# MAGIC
+# MAGIC **Source pipeline:** `<pipeline_id>`
+# MAGIC **Description:** <description>
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Configuration
+
+# COMMAND ----------
+
+# Cell: imports and secrets (NEVER hardcode credentials — use dbutils.secrets)
+import ...
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Pipeline Code
+
+# COMMAND ----------
+
+# Cell: main pipeline code
+...
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## TODO: Manual Review Required
+# MAGIC - Stage X requires manual attention because ...
+
+# COMMAND ----------
+
+# Cell: any manual action items as commented stubs
+# TODO: ...
+```
+
+Rules:
+- **First line MUST be exactly:** `# Databricks notebook source`
+- **Cells are separated by:** `# COMMAND ----------` (on its own line, blank lines around it)
+- **Markdown cells use:** `# MAGIC %md` prefix on every line
+- **Never put `# COMMAND ----------` inside a code block** — it is a cell boundary, not a comment
 - `dbutils.secrets.get(scope, key)` for ALL credentials — never hardcode
-- End with the write operation
 
-### Notebooks
-- `# COMMAND ----------` between cells
-- First cell: `# TODO` list of all stages requiring manual attention
-- One cell per stage group (origin, transforms, destination)
+### DLT Pipelines
+- Cell 1: %md header
+- Cell 2: imports (`import dlt`, `from pyspark.sql.functions import ...`)
+- Cell 3: one `@dlt.streaming_table()` or `@dlt.table()` per logical table
+- Cell 4: %md TODO cell listing any manual steps
+- Use `dlt.expect_or_drop()` for data quality rules
+- Use `dlt.apply_changes()` only for CDC sources
+
+### Databricks Jobs
+- Cell 1: %md header
+- Cell 2: imports + `spark = SparkSession.builder.getOrCreate()`
+- Cell 3: secrets / config
+- Cell 4+: one cell per stage group (read → transform → write)
+- Cell last: %md TODO cell
+
+### Notebooks (complex / custom code)
+- Cell 1: %md header
+- Cell 2: %md TODO list of ALL stages needing manual attention
+- Cell 3: imports
+- Cell 4+: one cell per stage (origin, each processor, destination)
+- `display(df)` after the origin and after major transforms
 - Mark untranslatable stages with `# TODO: MANUAL MIGRATION REQUIRED`
-- `display(df)` at key inspection points
 
 ## StreamSets EL Expression Translation
 

@@ -127,7 +127,7 @@ sequenceDiagram
     Agent->>State: status = MIGRATING
 
     loop Up to 20 iterations
-        Agent->>+LLM: messages + system prompt + tool schemas
+        Agent->>LLM: messages + system prompt + tool schemas
         Note over LLM: [LLM CALL] consumes tokens
 
         alt stop_reason = tool_use
@@ -147,11 +147,11 @@ sequenceDiagram
             LLM-->>Agent: tool call: emit_migration_result(code, score, warnings)
             Agent->>Tools: dispatch emit_migration_result
             Note over Agent: capture final result
-            Tools-->>-Agent: {status: "received"}
+            Tools-->>Agent: {status: "received"}
             Agent->>LLM: tool result
 
         else stop_reason = end_turn
-            LLM-->>Agent: (done)
+            LLM-->>Agent: done
         end
     end
 

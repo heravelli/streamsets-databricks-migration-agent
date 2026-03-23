@@ -18,6 +18,13 @@ Configure via .env:
     AI_GATEWAY_TOKEN=<token-from-gateway-team>
     AI_GATEWAY_MODEL=<model-name-as-exposed-by-gateway>
 
+    # Optional — override if your gateway puts the model in the URL path:
+    AI_GATEWAY_COMPLETIONS_PATH=/chat/{model}
+    # With the above setting the client POSTs to:
+    #   https://ai-gateway.yourcompany.com/chat/claude-sonnet-4-6
+    # instead of the default:
+    #   https://ai-gateway.yourcompany.com/v1/chat/completions
+
 The response is wrapped in an Anthropic-compatible interface so MigrationAgent
 requires zero changes.
 """
@@ -205,15 +212,24 @@ class GatewayClient:
         url: str | None = None,
         token: str | None = None,
         model: str | None = None,
+        completions_path: str | None = None,
     ):
         resolved_url = url or settings.ai_gateway_url
         resolved_token = token or settings.ai_gateway_token
         resolved_model = model or settings.ai_gateway_model
+        resolved_path = completions_path or settings.ai_gateway_completions_path
 
         if not resolved_url:
             raise ValueError("AI_GATEWAY_URL must be set when using gateway client")
         if not resolved_token:
             raise ValueError("AI_GATEWAY_TOKEN must be set when using gateway client")
+
+        # If the completions path contains "{model}" the model is embedded in the URL.
+        # In that case we POST to the resolved full URL and omit "model" from the body
+        # (some gateways reject unknown body fields).
+        self._model_in_path = "{model}" in resolved_path
+        # Substitute model into path now so we don't repeat it on every request.
+        self._completions_path = resolved_path.format(model=resolved_model) if self._model_in_path else resolved_path
 
         self._http = httpx.AsyncClient(
             base_url=resolved_url.rstrip("/"),
@@ -233,18 +249,21 @@ class GatewayClient:
         max_tokens: int | None = None,
     ) -> _GatewayResponse:
         max_tokens = max_tokens or settings.agent_max_tokens
-        payload = {
-            "model": self.model,
+        payload: dict = {
             "messages": _anthropic_messages_to_openai(messages, system),
             "tools": _anthropic_tools_to_openai(tools),
             "tool_choice": "auto",
             "max_tokens": max_tokens,
         }
+        # Omit "model" from the body when it is already encoded in the URL path
+        # (some gateways reject unknown body fields; others route by URL not body).
+        if not self._model_in_path:
+            payload["model"] = self.model
 
         for attempt in range(3):
             try:
                 # [LLM CALL] Sends request to AI gateway → forwards to AI_GATEWAY_MODEL
-                resp = await self._http.post("/chat/completions", json=payload)
+                resp = await self._http.post(self._completions_path, json=payload)
                 if resp.status_code == 429:
                     if attempt == 2:
                         resp.raise_for_status()

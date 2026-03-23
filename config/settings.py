@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     ai_gateway_token: str = ""        # Bearer token from the gateway team
     ai_gateway_model: str = ""        # Model name as exposed by the gateway
 
+    # Completions path appended to AI_GATEWAY_URL.
+    # Default "/chat/completions" works for OpenAI-compatible gateways (LiteLLM, Azure, etc.).
+    # If your gateway embeds the model in the URL path use "{model}" as a placeholder, e.g.:
+    #   AI_GATEWAY_COMPLETIONS_PATH=/chat/{model}
+    # The client will substitute the actual model name and POST directly to that URL.
+    # When "{model}" is present the "model" field is omitted from the request body.
+    ai_gateway_completions_path: str = "/chat/completions"
+
     # ── OpenAI ────────────────────────────────────────────────────────────────
     # Set AGENT_CLIENT_TYPE=openai to use OpenAI directly with your API key
     openai_api_key: str = ""          # OPENAI_API_KEY

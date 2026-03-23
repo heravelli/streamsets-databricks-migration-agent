@@ -10,7 +10,7 @@ Built for scale: 2000 pipelines, 20 teams, 78 unique stages.
 
 ```
 1. Ingest   → Parse StreamSets JSON/YAML exports, register in state
-2. Migrate  → Claude AI agent converts each pipeline to Databricks Python code
+2. Migrate  → AI agent converts each pipeline to Databricks Python code
 3. Review   → Humans approve, request changes, or escalate via web portal
 4. Export   → Bundle approved artifacts for deployment
 ```
@@ -19,6 +19,159 @@ The agent auto-selects the best Databricks target per pipeline:
 - **Delta Live Tables (DLT)** — streaming pipelines (Multi-topic Kafka, Azure Event Hubs)
 - **Databricks Job** — batch/cron pipelines
 - **Notebook** — complex pipelines with custom code (Groovy/Jython) or many stages
+
+---
+
+## Call Flow Diagrams
+
+### System Overview
+
+```mermaid
+flowchart TD
+    User(["👤 User / Team Member"])
+
+    subgraph CLI ["CLI  (uv run migrate ...)"]
+        Ingest["ingest\nParse JSON/YAML exports"]
+        Run["run\nTrigger migration agent"]
+        Serve["serve\nStart review portal"]
+        Status["status\nProgress report"]
+        Export["export\nBundle approved artifacts"]
+    end
+
+    subgraph Agent ["Migration Agent"]
+        Factory["client_factory\nSelect AI client"]
+        MigAgent["MigrationAgent\nAgentic loop"]
+        CtxBuilder["context_builder\nBuild pipeline prompt"]
+
+        subgraph Clients ["AI Clients"]
+            Claude["ClaudeClient\nAnthropic SDK"]
+            Gateway["GatewayClient\nEnterprise AI gateway"]
+            OpenAI["GatewayClient\nOpenAI API"]
+        end
+
+        subgraph Tools ["Tools (no LLM)"]
+            Classify["classify_pipeline"]
+            Lookup["lookup_stage_mapping"]
+            Emit["emit_migration_result"]
+        end
+    end
+
+    subgraph Catalog ["Stage Catalog"]
+        YAML["78 stages\norigins / processors\ndestinations / executors"]
+    end
+
+    subgraph State ["State Manager"]
+        JSON[("migration_state.json\nportalocker")]
+    end
+
+    subgraph Portal ["Review Portal  :8000  (FastAPI)"]
+        Dashboard["/teams/progress\nDashboard"]
+        Review["/pipelines/id/review\nSide-by-side review"]
+        Decision["Approve / Request Changes\nEscalate / Reject"]
+    end
+
+    Output[("output/team/pipeline/\npipeline.py\nmetadata.json")]
+    LLM(["☁️ LLM\nAnthropic / Gateway / OpenAI"])
+
+    User -->|"migrate ingest"| Ingest
+    User -->|"migrate run"| Run
+    User -->|"migrate serve"| Serve
+    User -->|"migrate status"| Status
+    User -->|"migrate export"| Export
+
+    Ingest --> State
+    Run --> Factory
+    Factory --> Claude & Gateway & OpenAI
+    Claude & Gateway & OpenAI --> LLM
+
+    Run --> MigAgent
+    MigAgent --> CtxBuilder
+    CtxBuilder --> MigAgent
+    MigAgent -->|"tool calls"| Classify & Lookup & Emit
+    Lookup --> YAML
+    MigAgent --> Output
+    MigAgent --> State
+
+    Serve --> Portal
+    Dashboard & Review --> State
+    Decision -->|"approve"| Output
+    Decision -->|"request changes"| Run
+
+    Export --> Output
+```
+
+---
+
+### Agentic Loop (per pipeline)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CLI as CLI (migrate run)
+    participant Agent as MigrationAgent
+    participant Ctx as context_builder
+    participant LLM as ☁️ LLM (Anthropic/Gateway/OpenAI)
+    participant Tools as Tool Dispatcher
+    participant Catalog as StageCatalog (YAML)
+    participant State as StateManager
+    participant FS as output/ (filesystem)
+
+    User->>CLI: migrate run --team alpha
+    CLI->>State: get pending pipelines
+    CLI->>Agent: migrate_pipeline(pipeline)
+
+    Agent->>Ctx: build_migration_prompt(pipeline)
+    Note over Ctx: full mode (~4000 tokens)<br/>or compact mode (~1500 tokens)
+    Ctx-->>Agent: prompt
+
+    Agent->>State: status = MIGRATING
+
+    loop Up to 20 iterations
+        Agent->>+LLM: messages + system prompt + tool schemas
+        Note over LLM: [LLM CALL] consumes tokens
+
+        alt stop_reason = tool_use
+            LLM-->>Agent: tool call: classify_pipeline(...)
+            Agent->>Tools: dispatch classify_pipeline
+            Note over Tools: [NO LLM] pure heuristic
+            Tools-->>Agent: {format: "dlt", reasoning: "..."}
+            Agent->>LLM: tool result
+
+            LLM-->>Agent: tool call: lookup_stage_mapping(stage)
+            Agent->>Tools: dispatch lookup_stage_mapping
+            Tools->>Catalog: lookup(stage_name)
+            Catalog-->>Tools: StageMapping (template, confidence)
+            Tools-->>Agent: mapping result
+            Agent->>LLM: tool result
+
+            LLM-->>Agent: tool call: emit_migration_result(code, score, warnings)
+            Agent->>Tools: dispatch emit_migration_result
+            Note over Agent: capture final result
+            Tools-->>-Agent: {status: "received"}
+            Agent->>LLM: tool result
+
+        else stop_reason = end_turn
+            LLM-->>Agent: (done)
+        end
+    end
+
+    Agent->>FS: write pipeline.py + metadata.json
+    Agent->>State: status = IN_REVIEW, store artifact
+    Agent-->>CLI: GeneratedArtifact
+    CLI-->>User: ✓ migrated (confidence: 0.85)
+
+    User->>CLI: migrate serve
+    Note over User: open http://localhost:8000
+    User->>State: review pipeline (approve / request changes)
+
+    alt approved
+        State->>State: status = APPROVED
+    else request changes
+        State->>State: status = CHANGES_REQUESTED
+        Note over User,Agent: re-migration triggered with feedback<br/>prior artifact injected into context
+        User->>CLI: migrate run (re-migration)
+    end
+```
 
 ---
 

@@ -108,18 +108,29 @@ def _anthropic_messages_to_openai(messages: list[dict], system: str) -> list[dic
             text_parts = []
             tool_calls = []
             for block in content:
-                btype = getattr(block, "type", block.get("type") if isinstance(block, dict) else None)
+                # Use isinstance guard before .get() — Python evaluates all
+                # function arguments eagerly, so getattr(obj, k, obj.get(k))
+                # would call obj.get(k) even when obj has the attribute.
+                if isinstance(block, dict):
+                    btype = block.get("type")
+                    name  = block.get("name")
+                    bid   = block.get("id", str(uuid.uuid4()))
+                    inp   = block.get("input", {})
+                    text  = block.get("text", "")
+                else:
+                    btype = getattr(block, "type", None)
+                    name  = getattr(block, "name", None)
+                    bid   = getattr(block, "id", str(uuid.uuid4()))
+                    inp   = getattr(block, "input", {})
+                    text  = getattr(block, "text", "")
+
                 if btype == "tool_use":
-                    name = getattr(block, "name", block.get("name"))
-                    bid = getattr(block, "id", block.get("id", str(uuid.uuid4())))
-                    inp = getattr(block, "input", block.get("input", {}))
                     tool_calls.append({
                         "id": bid,
                         "type": "function",
                         "function": {"name": name, "arguments": json.dumps(inp)},
                     })
                 elif btype == "text":
-                    text = getattr(block, "text", block.get("text", ""))
                     if text:
                         text_parts.append(text)
 

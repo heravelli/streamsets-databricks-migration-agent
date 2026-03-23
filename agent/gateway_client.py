@@ -32,11 +32,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 
 import httpx
 
 from config.settings import settings
+
+log = logging.getLogger(__name__)
 
 
 # ── Response objects that mirror the Anthropic SDK interface ──────────────────
@@ -231,13 +234,42 @@ class GatewayClient:
         # Substitute model into path now so we don't repeat it on every request.
         self._completions_path = resolved_path.format(model=resolved_model) if self._model_in_path else resolved_path
 
+        self._full_url = resolved_url.rstrip("/") + self._completions_path
+        log.info("GatewayClient initialised — will POST to: %s", self._full_url)
+
+        # Build auth header.
+        # Most gateways: "Authorization: Bearer <token>"
+        # Some enterprise gateways (e.g. Apigee / Azure AI Foundry):
+        #   "api-key: <token>"  ← set AI_GATEWAY_AUTH_HEADER=api-key
+        auth_header_name = settings.ai_gateway_auth_header
+        if auth_header_name.lower() == "authorization":
+            auth_value = f"Bearer {resolved_token}"
+        else:
+            auth_value = resolved_token  # e.g. api-key: <raw token, no "Bearer">
+
+        headers: dict[str, str] = {
+            auth_header_name: auth_value,
+            "Content-Type": "application/json",
+        }
+
+        # Merge any extra headers from AI_GATEWAY_EXTRA_HEADERS
+        # Format: "ai-gateway-version:v2,x-custom:foo"
+        if settings.ai_gateway_extra_headers:
+            for pair in settings.ai_gateway_extra_headers.split(","):
+                pair = pair.strip()
+                if ":" in pair:
+                    k, v = pair.split(":", 1)
+                    headers[k.strip()] = v.strip()
+
+        log.debug("Gateway request headers (redacted): %s", {k: ("***" if "key" in k.lower() or "auth" in k.lower() else v) for k, v in headers.items()})
+
         self._http = httpx.AsyncClient(
-            base_url=resolved_url.rstrip("/"),
-            headers={
-                "Authorization": f"Bearer {resolved_token}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             timeout=120.0,
+            # Follow 301/302 redirects automatically.
+            # Enterprise gateways often redirect for trailing-slash mismatches
+            # or HTTP→HTTPS upgrades. httpx does NOT follow redirects by default.
+            follow_redirects=True,
         )
         self.model = resolved_model
 
@@ -269,7 +301,12 @@ class GatewayClient:
         for attempt in range(3):
             try:
                 # [LLM CALL] Sends request to AI gateway → forwards to AI_GATEWAY_MODEL
-                resp = await self._http.post(self._completions_path, json=payload)
+                log.debug("Gateway POST attempt %d → %s", attempt + 1, self._full_url)
+                resp = await self._http.post(self._full_url, json=payload)
+                if resp.history:
+                    # Log redirect chain so misconfigured paths are easy to diagnose
+                    for r in resp.history:
+                        log.warning("Gateway redirect: %s %s → %s", r.status_code, r.url, r.headers.get("location"))
                 if resp.status_code == 429:
                     if attempt == 2:
                         resp.raise_for_status()

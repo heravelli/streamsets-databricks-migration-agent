@@ -40,23 +40,76 @@ def _parse_stage(stage_raw: dict) -> StageDefinition:
     )
 
 
+def _execution_mode_from_config(configuration: list[dict]) -> str:
+    """
+    Real StreamSets exports store executionMode inside the pipelineConfig.configuration
+    array as {"name": "executionMode", "value": "..."}.  Fall back to STANDALONE if absent.
+    """
+    for entry in configuration:
+        if entry.get("name") == "executionMode":
+            return str(entry.get("value", "STANDALONE"))
+    return "STANDALONE"
+
+
 def parse_pipeline(raw: dict, source_path: str = "") -> StreamSetsPipeline:
-    """Parse a StreamSets pipeline dict (from JSON export) into a StreamSetsPipeline."""
+    """
+    Parse a StreamSets pipeline dict (from JSON export) into a StreamSetsPipeline.
+
+    Handles both export shapes:
+      • Old / simplified:  stages / pipelineId / title at the top level
+      • Real SDC export:   everything nested under a "pipelineConfig" key,
+                           with a sibling "pipelineRules" key
+    """
     try:
-        stages_raw = raw.get("stages", [])
+        # ── Unwrap pipelineConfig wrapper if present (real SDC export format) ──
+        cfg = raw.get("pipelineConfig", raw)  # fall back to raw itself for flat format
+
+        stages_raw = cfg.get("stages", [])
         stages = [_parse_stage(s) for s in stages_raw]
 
-        error_stage_raw = raw.get("errorStage")
+        error_stage_raw = cfg.get("errorStage")
+        # errorStage can be a dict (single stage) or a list; handle both
+        if isinstance(error_stage_raw, list):
+            error_stage_raw = error_stage_raw[0] if error_stage_raw else None
         error_stage = _parse_stage(error_stage_raw) if error_stage_raw else None
 
+        # pipelineId: prefer cfg field, then info sub-object, then filename stem
+        pipeline_id = (
+            cfg.get("pipelineId")
+            or cfg.get("info", {}).get("pipelineId")
+            or Path(source_path).stem
+        )
+
+        title = (
+            cfg.get("title")
+            or cfg.get("info", {}).get("title")
+            or Path(source_path).stem
+        )
+
+        # executionMode may be a top-level field (flat format) or inside the
+        # configuration array (real SDC export format)
+        execution_mode = cfg.get("executionMode") or _execution_mode_from_config(
+            cfg.get("configuration", [])
+        )
+
+        # metadata.labels can be a list of tag strings (real SDC export) or
+        # a dict of key/value parameters (simplified format). Normalise to dict.
+        raw_labels = cfg.get("metadata", {}).get("labels", {})
+        if isinstance(raw_labels, list):
+            parameters = {label: True for label in raw_labels}
+        elif isinstance(raw_labels, dict):
+            parameters = raw_labels
+        else:
+            parameters = {}
+
         pipeline = StreamSetsPipeline(
-            pipelineId=raw.get("pipelineId", raw.get("info", {}).get("pipelineId", Path(source_path).stem)),
-            title=raw.get("title", raw.get("info", {}).get("title", Path(source_path).stem)),
-            description=raw.get("description", ""),
+            pipelineId=pipeline_id,
+            title=title,
+            description=cfg.get("description", ""),
             stages=stages,
-            parameters=raw.get("metadata", {}).get("labels", {}),
+            parameters=parameters,
             errorStage=error_stage,
-            executionMode=raw.get("executionMode", "STANDALONE"),
+            executionMode=execution_mode,
         )
         pipeline.raw = raw
         return pipeline

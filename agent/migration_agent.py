@@ -150,7 +150,7 @@ class MigrationAgent:
                 f"Agent did not emit a migration result after {iteration + 1} iterations"
             )
 
-        return self._build_artifact(final_result)
+        return self._build_artifact(final_result, pipeline=pipeline)
 
     def _dispatch_tools(self, content_blocks) -> list[dict]:
         """Execute tool calls returned by the LLM. No LLM involvement — pure Python logic."""
@@ -200,7 +200,45 @@ class MigrationAgent:
                     return block.input
         return None
 
-    def _build_artifact(self, result: dict) -> GeneratedArtifact:
+    @staticmethod
+    def _ensure_notebook_format(code: str, pipeline: StreamSetsPipeline, fmt_str: str) -> str:
+        """
+        Guarantee the generated code is a valid Databricks notebook source file.
+
+        Databricks recognises a .py file as a notebook only when the very first
+        line is exactly:  # Databricks notebook source
+
+        If the LLM omitted that header (or placed it elsewhere), this method
+        inserts it and ensures the opening %md cell has the pipeline metadata.
+        The rest of the code is left untouched.
+        """
+        NOTEBOOK_HEADER = "# Databricks notebook source"
+
+        # Strip any leading blank lines so we can check the first real line
+        stripped = code.lstrip("\n")
+
+        if stripped.startswith(NOTEBOOK_HEADER):
+            # Already correct — return as-is (preserve LLM formatting)
+            return code
+
+        # Build a tidy header cell and prepend it
+        fmt_label = {"dlt": "Delta Live Tables", "job": "Databricks Job", "notebook": "Notebook"}.get(fmt_str, fmt_str)
+        header = (
+            f"{NOTEBOOK_HEADER}\n"
+            f"# MAGIC %md\n"
+            f"# MAGIC # {pipeline.title}\n"
+            f"# MAGIC Migrated from StreamSets &nbsp;|&nbsp; "
+            f"Format: **{fmt_label}**\n"
+            f"# MAGIC\n"
+            f"# MAGIC **Pipeline ID:** `{pipeline.pipeline_id}`\n"
+            f"# MAGIC **Description:** {pipeline.description or 'N/A'}\n"
+            f"\n"
+            f"# COMMAND ----------\n"
+            f"\n"
+        )
+        return header + stripped
+
+    def _build_artifact(self, result: dict, pipeline: StreamSetsPipeline | None = None) -> GeneratedArtifact:
         """Convert the raw emit_migration_result dict to a GeneratedArtifact. No LLM call."""
         fmt_str = result.get("target_format", "notebook")
         try:
@@ -208,8 +246,7 @@ class MigrationAgent:
         except ValueError:
             fmt = DatabricksTargetFormat.NOTEBOOK
 
-        suffix = {"dlt": "py", "job": "py", "notebook": "py"}.get(fmt_str, "py")
-        filename = f"pipeline.{suffix}"
+        filename = "pipeline.py"
 
         # Compute confidence deterministically from catalog lookup results.
         # The LLM's self-reported confidence_score is ignored — it varies between
@@ -221,10 +258,15 @@ class MigrationAgent:
         else:
             confidence = float(result.get("confidence_score", 0.0))
 
+        code = result.get("python_code", "")
+        # Enforce Databricks notebook source format regardless of what the LLM produced
+        if pipeline is not None:
+            code = self._ensure_notebook_format(code, pipeline, fmt_str)
+
         return GeneratedArtifact(
             artifact_type=fmt,
             filename=filename,
-            content=result.get("python_code", ""),
+            content=code,
             agent_reasoning=result.get("agent_reasoning", ""),
             confidence_score=confidence,
             unmapped_stages=result.get("unmapped_stages", []),

@@ -16,7 +16,7 @@ Built for scale: 2000 pipelines, 20 teams, 78 unique stages.
 ```
 
 The agent auto-selects the best Databricks target per pipeline:
-- **Delta Live Tables (DLT)** — streaming/CDC pipelines (Kafka, MySQL BinLog, etc.)
+- **Delta Live Tables (DLT)** — streaming pipelines (Multi-topic Kafka, Azure Event Hubs)
 - **Databricks Job** — batch/cron pipelines
 - **Notebook** — complex pipelines with custom code (Groovy/Jython) or many stages
 
@@ -104,6 +104,7 @@ STATE_FILE=data/state/migration_state.json
 # ── Agent tuning ────────────────────────────────────────────────────────
 AGENT_MAX_TOKENS=8096
 AGENT_CONCURRENCY=3                 # Parallel pipeline migrations
+AGENT_COMPACT_CONTEXT=false         # Set true for token-limited gateway models
 ```
 
 ---
@@ -139,37 +140,24 @@ catalog/stages/
 └── executors.yaml     # Executors (shell, JDBC query, email, etc.)
 ```
 
-Each entry maps a StreamSets stage to its Databricks equivalent with a Jinja2 code template:
+All **78 production stages** are fully cataloged (see `streamsets_stages.md` for the authoritative list). Each entry maps a StreamSets stage to its Databricks equivalent with a Jinja2 code template:
 
 ```yaml
-- streamsets_stage: "com.streamsets.pipeline.stage.origin.kafka.KafkaDSource"
-  streamsets_label: "Kafka Consumer"
+- streamsets_stage: "com.streamsets.pipeline.stage.origin.multikafka.MultiKafkaDSource"
+  streamsets_label: "Multi-Topic Kafka Consumer"
   databricks_equivalent: "dlt_streaming_table"
   confidence: "exact"             # exact | high | medium | low | unsupported
   code_template: |
-    @dlt.table(name="{{ table_name }}")
-    def {{ table_name }}():
+    @dlt.table(name="{{ topic }}_raw")
+    def {{ topic }}_raw():
         return spark.readStream.format("kafka")...
   config_mapping:
-    kafkaConfigBean.metadataBrokerList: "bootstrap_servers"
+    conf.brokerURI: "bootstrap_servers"
+    conf.topicList: "topic_list"
   requires_manual_review: false
 ```
 
-### Expanding to all 78 stages
-
-1. Run a frequency analysis to prioritise:
-   ```bash
-   python -c "
-   import json, glob, collections
-   stages = collections.Counter()
-   for f in glob.glob('data/pipelines/**/*.json', recursive=True):
-       stages.update(s['stageName'] for s in json.load(open(f)).get('stages', []))
-   for name, count in stages.most_common(30):
-       print(count, name)
-   "
-   ```
-2. Add mappings for the top stages in the appropriate YAML file
-3. Mark unsupported/niche stages as `confidence: "unsupported"` — these auto-route to Notebook
+To add a new stage discovered in production, add an entry to the appropriate YAML file and restart the agent. Stages with `confidence: "unsupported"` auto-route the pipeline to Notebook format.
 
 ---
 

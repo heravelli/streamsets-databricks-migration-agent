@@ -6,6 +6,22 @@ AI-powered agent that migrates **2000 StreamSets Data Collector pipelines** acro
 
 ---
 
+## Git Workflow
+
+- **Always create a feature branch** before making any code changes — never commit directly to `main`.
+- Branch naming: `feature/<short-description>` (e.g. `feature/add-snowflake-origin`)
+- Open a PR from the branch; do not push directly to `main`.
+- Only switch to `main` to pull the latest after a PR is merged.
+
+```bash
+git checkout main && git pull
+git checkout -b feature/<description>
+# ... make changes, commit ...
+git push -u origin feature/<description>
+```
+
+---
+
 ## Package Manager
 
 Always use **`uv`** — never call `pip` directly.

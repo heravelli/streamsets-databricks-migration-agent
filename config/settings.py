@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     ai_gateway_token: str = ""        # Bearer token from the gateway team
     ai_gateway_model: str = ""        # Model name as exposed by the gateway
 
+    # ── OpenAI ────────────────────────────────────────────────────────────────
+    # Set AGENT_CLIENT_TYPE=openai to use OpenAI directly with your API key
+    openai_api_key: str = ""          # OPENAI_API_KEY
+    openai_model: str = "gpt-4o"      # OPENAI_MODEL (gpt-4o recommended for tool use)
+
     # ── Paths configurable via env vars for container deployments ─────────────
     data_dir: Path = Path("data/pipelines")
     output_dir: Path = Path("output")

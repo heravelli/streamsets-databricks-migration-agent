@@ -182,25 +182,37 @@ def _openai_response_to_anthropic(raw: dict) -> _GatewayResponse:
 
 class GatewayClient:
     """
-    Calls an OpenAI-compatible AI gateway endpoint.
+    Calls any OpenAI-compatible endpoint (enterprise gateway or OpenAI directly).
     Returns responses shaped like the Anthropic SDK so MigrationAgent is unchanged.
+
+    url, token, model can be passed explicitly (e.g. for OpenAI) or left as None
+    to fall back to AI_GATEWAY_URL / AI_GATEWAY_TOKEN / AI_GATEWAY_MODEL settings.
     """
 
-    def __init__(self):
-        if not settings.ai_gateway_url:
+    def __init__(
+        self,
+        url: str | None = None,
+        token: str | None = None,
+        model: str | None = None,
+    ):
+        resolved_url = url or settings.ai_gateway_url
+        resolved_token = token or settings.ai_gateway_token
+        resolved_model = model or settings.ai_gateway_model
+
+        if not resolved_url:
             raise ValueError("AI_GATEWAY_URL must be set when using gateway client")
-        if not settings.ai_gateway_token:
+        if not resolved_token:
             raise ValueError("AI_GATEWAY_TOKEN must be set when using gateway client")
 
         self._http = httpx.AsyncClient(
-            base_url=settings.ai_gateway_url.rstrip("/"),
+            base_url=resolved_url.rstrip("/"),
             headers={
-                "Authorization": f"Bearer {settings.ai_gateway_token}",
+                "Authorization": f"Bearer {resolved_token}",
                 "Content-Type": "application/json",
             },
             timeout=120.0,
         )
-        self.model = settings.ai_gateway_model
+        self.model = resolved_model
 
     async def messages_create(
         self,

@@ -13,18 +13,25 @@ console = Console()
 
 def ingest(
     pipelines_dir: Path = typer.Argument(..., help="Directory containing StreamSets JSON/YAML exports"),
-    team: str = typer.Option(..., "--team", "-t", help="Team name to associate these pipelines with"),
+    team: str = typer.Option(None, "--team", "-t", help="Team name (defaults to the directory name)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Parse and report without writing state"),
 ):
     """
     Parse StreamSets pipeline exports and register them in the migration state.
+    Team name is inferred from the directory name — use --team to override.
 
-    Example:
-        migrate ingest ./data/pipelines/team_alpha/ --team team_alpha
+    Examples:
+        migrate ingest ./data/pipelines/team_alpha/
+        migrate ingest ./data/pipelines/team_alpha/ --team my_custom_name
     """
     if not pipelines_dir.exists():
         console.print(f"[red]Directory not found: {pipelines_dir}[/red]")
         raise typer.Exit(1)
+
+    # Infer team name from the directory name if not explicitly provided
+    if not team:
+        team = pipelines_dir.resolve().name
+        console.print(f"[dim]Team name inferred from directory: '{team}'[/dim]")
 
     state_manager = StateManager(settings.state_file)
     results = scan_directory(pipelines_dir)

@@ -237,16 +237,38 @@ class GatewayClient:
         self._full_url = resolved_url.rstrip("/") + self._completions_path
         log.info("GatewayClient initialised — will POST to: %s", self._full_url)
 
+        # Build auth header.
+        # Most gateways: "Authorization: Bearer <token>"
+        # Some enterprise gateways (e.g. Apigee / Azure AI Foundry):
+        #   "api-key: <token>"  ← set AI_GATEWAY_AUTH_HEADER=api-key
+        auth_header_name = settings.ai_gateway_auth_header
+        if auth_header_name.lower() == "authorization":
+            auth_value = f"Bearer {resolved_token}"
+        else:
+            auth_value = resolved_token  # e.g. api-key: <raw token, no "Bearer">
+
+        headers: dict[str, str] = {
+            auth_header_name: auth_value,
+            "Content-Type": "application/json",
+        }
+
+        # Merge any extra headers from AI_GATEWAY_EXTRA_HEADERS
+        # Format: "ai-gateway-version:v2,x-custom:foo"
+        if settings.ai_gateway_extra_headers:
+            for pair in settings.ai_gateway_extra_headers.split(","):
+                pair = pair.strip()
+                if ":" in pair:
+                    k, v = pair.split(":", 1)
+                    headers[k.strip()] = v.strip()
+
+        log.debug("Gateway request headers (redacted): %s", {k: ("***" if "key" in k.lower() or "auth" in k.lower() else v) for k, v in headers.items()})
+
         self._http = httpx.AsyncClient(
-            headers={
-                "Authorization": f"Bearer {resolved_token}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             timeout=120.0,
             # Follow 301/302 redirects automatically.
-            # Enterprise gateways often issue a redirect for trailing-slash
-            # mismatches or HTTP→HTTPS upgrades.  httpx does NOT follow redirects
-            # by default, so without this flag a 301 raises an error immediately.
+            # Enterprise gateways often redirect for trailing-slash mismatches
+            # or HTTP→HTTPS upgrades. httpx does NOT follow redirects by default.
             follow_redirects=True,
         )
         self.model = resolved_model

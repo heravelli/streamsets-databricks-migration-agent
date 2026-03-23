@@ -22,11 +22,19 @@ class Settings(BaseSettings):
 
     # Completions path appended to AI_GATEWAY_URL.
     # Default "/chat/completions" works for OpenAI-compatible gateways (LiteLLM, Azure, etc.).
-    # If your gateway embeds the model in the URL path use "{model}" as a placeholder, e.g.:
-    #   AI_GATEWAY_COMPLETIONS_PATH=/chat/{model}
-    # The client will substitute the actual model name and POST directly to that URL.
+    # Use "{model}" as a placeholder when the model is embedded in the URL, e.g.:
+    #   AI_GATEWAY_COMPLETIONS_PATH=/chat/{model}/chat/completions
     # When "{model}" is present the "model" field is omitted from the request body.
     ai_gateway_completions_path: str = "/chat/completions"
+
+    # Auth header name.  Most gateways accept "Authorization: Bearer <token>".
+    # Some enterprise gateways (e.g. Azure AI Foundry via Apigee) require
+    # "api-key: <token>" instead — set AI_GATEWAY_AUTH_HEADER=api-key in that case.
+    ai_gateway_auth_header: str = "Authorization"
+
+    # Extra headers sent with every gateway request, as comma-separated key:value pairs.
+    # Example:  AI_GATEWAY_EXTRA_HEADERS=ai-gateway-version:v2,x-custom-header:foo
+    ai_gateway_extra_headers: str = ""
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
     # Set AGENT_CLIENT_TYPE=openai to use OpenAI directly with your API key

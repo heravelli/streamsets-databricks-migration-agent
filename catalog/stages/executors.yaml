@@ -1,91 +1,222 @@
+# Executors catalog — all 8 executor stages used across 2000 pipelines.
+# Source: streamsets_stages.md (authoritative list)
+# Note: BigQueryDTarget and GoogleCloudStorageDTarget appear in the Executor section of
+#       streamsets_stages.md but are destination stages — they are in destinations.yaml.
+
 stages:
-  - streamsets_stage: "com.streamsets.pipeline.stage.executor.shell.ShellDExecutor"
-    streamsets_label: "Shell Executor"
-    databricks_equivalent: "custom_python"
-    databricks_label: "dbutils.notebook.run() or subprocess"
+  - streamsets_stage: "com.streamsets.pipeline.stage.bigquery.enterprise.executor.BigQueryDExecutor"
+    streamsets_label: "BigQuery Executor"
+    databricks_equivalent: "spark_sql"
+    databricks_label: "Spark BigQuery Connector DDL / DML execution"
     confidence: "medium"
     code_template: |
-      # Shell Executor → dbutils or subprocess
-      import subprocess
+      # BigQuery Executor → Run a BigQuery query/DDL via Spark BigQuery Connector
+      # Option 1: Use BigQuery client library for DDL/admin operations
+      from google.cloud import bigquery
 
-      result = subprocess.run(
-          ["{{ command }}"],
-          shell=True,
-          capture_output=True,
-          text=True
-      )
-      if result.returncode != 0:
-          raise RuntimeError(f"Shell command failed: {result.stderr}")
+      client = bigquery.Client(project="{{ gcp_project }}")
+      query_job = client.query("{{ sql_query }}")
+      query_job.result()  # wait for completion
+      print(f"BigQuery job completed: {query_job.job_id}")
+
+      # Option 2: Run via Spark BigQuery connector (for SELECT queries materialised as temp table)
+      # df = spark.read.format("bigquery").option("query", "{{ sql_query }}").load()
     config_mapping:
-      conf.script: "command"
-    notes: "Shell commands in Databricks run on the driver node. Consider Databricks Jobs for orchestration."
-    requires_manual_review: true
-
-  - streamsets_stage: "com.streamsets.pipeline.stage.executor.jdbc.JdbcQueryDExecutor"
-    streamsets_label: "JDBC Query Executor"
-    databricks_equivalent: "spark_sql"
-    databricks_label: "spark.sql() or JDBC execution"
-    confidence: "high"
-    code_template: |
-      # JDBC Query Executor → spark.sql or JDBC execution
-      spark.sql("{{ sql_query }}")
-
-      # For external databases, use JDBC:
-      # import jaydebeapi
-      # conn = jaydebeapi.connect(...)
-      # cursor = conn.cursor()
-      # cursor.execute("{{ sql_query }}")
-    config_mapping:
-      hikariConfigBean.connectionString: "jdbc_url"
-      queries: "sql_query"
-    notes: "For Delta/Hive, use spark.sql(). For external DBs, use JDBC connection."
+      conf.projectId: "gcp_project"
+      conf.query: "sql_query"
+    notes: "Install google-cloud-bigquery on the cluster. GCP credentials via Databricks service account."
     requires_manual_review: false
 
-  - streamsets_stage: "com.streamsets.pipeline.stage.executor.http.HttpDExecutor"
-    streamsets_label: "HTTP Client Executor"
-    databricks_equivalent: "custom_python"
-    databricks_label: "Python requests"
-    confidence: "high"
-    code_template: |
-      # HTTP Client Executor → Python requests
-      import requests
-
-      response = requests.request(
-          method="{{ method | default('POST') }}",
-          url="{{ url }}",
-          headers={{ headers | tojson }},
-          json={{ body | tojson }},
-          timeout=30
-      )
-      response.raise_for_status()
-    config_mapping:
-      conf.resourceUrl: "url"
-      conf.httpMethod: "method"
-    notes: "Add appropriate error handling and retry logic."
-    requires_manual_review: false
-
-  - streamsets_stage: "com.streamsets.pipeline.stage.executor.emailexecutor.EmailDExecutor"
+  - streamsets_stage: "com.streamsets.pipeline.stage.executor.emailexecutor.EmailExecutor"
     streamsets_label: "Email Executor"
     databricks_equivalent: "custom_python"
-    databricks_label: "Python smtplib or notification service"
+    databricks_label: "Python smtplib or Databricks alert notification"
     confidence: "medium"
     code_template: |
-      # Email Executor → Python email
+      # Email Executor → Python email via SMTP
       import smtplib
       from email.mime.text import MIMEText
+      from email.mime.multipart import MIMEMultipart
 
-      msg = MIMEText("{{ email_body }}")
+      msg = MIMEMultipart()
       msg["Subject"] = "{{ subject }}"
       msg["From"] = "{{ from_address }}"
       msg["To"] = "{{ to_addresses }}"
+      msg.attach(MIMEText("{{ email_body }}", "plain"))
 
       with smtplib.SMTP("{{ smtp_host }}", {{ smtp_port | default(587) }}) as server:
+          server.ehlo()
           server.starttls()
           server.login("{{ smtp_user }}", dbutils.secrets.get("{{ scope }}", "smtp_password"))
           server.send_message(msg)
+          print(f"Email sent to {{ to_addresses }}")
     config_mapping:
       conf.to: "to_addresses"
       conf.subject: "subject"
       conf.body: "email_body"
-    notes: "Consider using Databricks alerts or Slack/Teams webhooks instead of email."
+      conf.from_: "from_address"
+    notes: "Consider Databricks alerts, Slack/Teams webhooks, or PagerDuty for production notifications."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.executor.finishpipeline.PipelineFinisherDExecutor"
+    streamsets_label: "Pipeline Finisher"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Structured Streaming query.stop() or sys.exit()"
+    confidence: "high"
+    code_template: |
+      # Pipeline Finisher → Stop a streaming query or exit the notebook
+      # Used to gracefully stop a streaming pipeline when a condition is met
+      # (e.g., no more records, max records processed).
+
+      # For Structured Streaming:
+      for q in spark.streams.active:
+          q.stop()
+      print("All streaming queries stopped — pipeline finished.")
+
+      # For Databricks Jobs (batch), simply let the notebook complete naturally.
+      # For conditional early exit:
+      # import sys; sys.exit(0)
+    config_mapping:
+      conf.preconditions: "finish_condition"
+    notes: "In Databricks Structured Streaming, use query.stop() or awaitTermination() with a condition check."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.executor.jdbc.JdbcQueryDExecutor"
+    streamsets_label: "JDBC Query Executor"
+    databricks_equivalent: "spark_sql"
+    databricks_label: "spark.sql() or JDBC execution via jaydebeapi"
+    confidence: "high"
+    code_template: |
+      # JDBC Query Executor → Execute SQL on an external database
+      # Option 1: Delta/Hive tables — use spark.sql()
+      spark.sql("{{ sql_query }}")
+
+      # Option 2: External JDBC database — use jaydebeapi or JDBC connection
+      # from pyspark.sql import SparkSession
+      # conn_props = {
+      #     "user": "{{ username }}",
+      #     "password": dbutils.secrets.get("{{ scope }}", "{{ secret_key }}"),
+      # }
+      # spark._jvm.java.sql.DriverManager.getConnection(
+      #     "{{ jdbc_url }}", "{{ username }}",
+      #     dbutils.secrets.get("{{ scope }}", "{{ secret_key }}")
+      # ).createStatement().execute("{{ sql_query }}")
+    config_mapping:
+      hikariConfigBean.connectionString: "jdbc_url"
+      queries: "sql_query"
+    notes: "For Delta/Hive, use spark.sql(). For external databases (Postgres, MySQL, etc.), use JDBC connection."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.executor.remote.RemoteLocationDExecutor"
+    streamsets_label: "SFTP/FTP/FTPS Executor"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Python paramiko file operations on remote server"
+    confidence: "low"
+    code_template: |
+      # SFTP/FTP Executor → paramiko file operations
+      import paramiko
+
+      ssh = paramiko.SSHClient()
+      ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+      ssh.connect(
+          hostname="{{ sftp_host }}",
+          port={{ sftp_port | default(22) }},
+          username="{{ sftp_user }}",
+          password=dbutils.secrets.get("{{ scope }}", "sftp_password")
+      )
+
+      # Execute remote command (e.g., move/rename/delete file):
+      stdin, stdout, stderr = ssh.exec_command("{{ remote_command }}")
+      exit_code = stdout.channel.recv_exit_status()
+      ssh.close()
+
+      if exit_code != 0:
+          raise RuntimeError(f"Remote command failed: {stderr.read().decode()}")
+    config_mapping:
+      remoteConfig.remoteAddress: "sftp_host"
+      remoteConfig.username: "sftp_user"
+      conf.task: "remote_command"
+    notes: "Install paramiko on the cluster. Consider Azure Data Factory for managed file operations."
+    requires_manual_review: true
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.executor.shell.ShellDExecutor"
+    streamsets_label: "Shell Executor"
+    databricks_equivalent: "custom_python"
+    databricks_label: "subprocess or dbutils.notebook.run()"
+    confidence: "medium"
+    code_template: |
+      # Shell Executor → Python subprocess (runs on Spark driver node)
+      import subprocess
+
+      result = subprocess.run(
+          "{{ shell_command }}",
+          shell=True,
+          capture_output=True,
+          text=True,
+          timeout=300
+      )
+      if result.returncode != 0:
+          raise RuntimeError(f"Shell command failed (exit {result.returncode}): {result.stderr}")
+      print(result.stdout)
+    config_mapping:
+      conf.script: "shell_command"
+    notes: "Shell commands run on the Spark driver. For cluster-wide ops, use dbutils.notebook.run() or Databricks Jobs API."
+    requires_manual_review: true
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.executor.snowflake.SnowflakeDExecutor"
+    streamsets_label: "Snowflake Executor"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Snowflake Python connector SQL execution"
+    confidence: "medium"
+    code_template: |
+      # Snowflake Executor → Snowflake Python connector
+      import snowflake.connector
+
+      conn = snowflake.connector.connect(
+          account="{{ sf_account }}",
+          user="{{ sf_user }}",
+          password=dbutils.secrets.get("{{ scope }}", "sf_password"),
+          warehouse="{{ sf_warehouse }}",
+          database="{{ sf_database }}",
+          schema="{{ sf_schema }}"
+      )
+      cursor = conn.cursor()
+      cursor.execute("{{ sql_query }}")
+      conn.commit()
+      cursor.close()
+      conn.close()
+      print(f"Snowflake query executed: {{ sql_query[:80] }}...")
+    config_mapping:
+      connection.connectionString: "sf_account"
+      queries: "sql_query"
+    notes: "Install snowflake-connector-python on the cluster. Prefer Databricks-to-Snowflake data sharing for bulk operations."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.metadata.gen2.DataLakeGen2MetadataDExecutor"
+    streamsets_label: "ADLS Gen2 Metadata Executor"
+    databricks_equivalent: "custom_python"
+    databricks_label: "dbutils.fs file/directory operations on ADLS Gen2"
+    confidence: "medium"
+    code_template: |
+      # ADLS Gen2 Metadata Executor → dbutils.fs operations
+      # Common operations: rename, move, delete files/directories on ADLS Gen2
+
+      adls_path = "abfss://{{ container }}@{{ account }}.dfs.core.windows.net/{{ path }}"
+
+      # Rename / move:
+      dbutils.fs.mv(f"{adls_path}/{{ source_file }}", f"{adls_path}/{{ target_file }}")
+
+      # Create directory:
+      # dbutils.fs.mkdirs(f"{adls_path}/{{ new_dir }}")
+
+      # Delete file:
+      # dbutils.fs.rm(f"{adls_path}/{{ file_to_delete }}", recurse=False)
+
+      # List directory:
+      # files = dbutils.fs.ls(adls_path)
+    config_mapping:
+      conf.storageAccount: "account"
+      conf.fileSystem: "container"
+      conf.filePath: "path"
+    notes: "dbutils.fs works natively with ADLS Gen2 paths mounted or configured in Databricks."
     requires_manual_review: false

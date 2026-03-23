@@ -1,3 +1,11 @@
+"""
+Direct Anthropic API client.
+
+[LLM] This module makes real LLM calls to Anthropic's API.
+      Every call to messages_create() sends a request to Anthropic and consumes tokens.
+      Configured via: ANTHROPIC_API_KEY, ANTHROPIC_MODEL (default: claude-sonnet-4-6)
+"""
+
 import asyncio
 import anthropic
 from config.settings import settings
@@ -15,6 +23,7 @@ class ClaudeClient:
         tools: list[dict],
         max_tokens: int | None = None,
     ) -> anthropic.types.Message:
+        # [LLM CALL] Sends request to Anthropic API — consumes input + output tokens
         max_tokens = max_tokens or settings.agent_max_tokens
         for attempt in range(3):
             try:

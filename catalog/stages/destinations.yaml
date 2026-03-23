@@ -1,4 +1,127 @@
+# Destinations catalog — all 18 destination stages used across 2000 pipelines.
+# Source: streamsets_stages.md (authoritative list)
+# Note: BigQueryDTarget and GoogleCloudStorageDTarget are listed under Executor in streamsets_stages.md
+#       but are destination stages — they are cataloged here.
+
 stages:
+  - streamsets_stage: "com.streamsets.pipeline.stage.destination.datalake.gen2.DataLakeGen2DTarget"
+    streamsets_label: "Azure Data Lake Storage Gen2"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark write to ADLS Gen2"
+    confidence: "high"
+    code_template: |
+      # ADLS Gen2 Destination → Spark write to ADLS Gen2
+      (df.write
+         .format("{{ output_format | default('delta') }}")
+         .mode("{{ write_mode | default('append') }}")
+         .option("path", "abfss://{{ container }}@{{ account }}.dfs.core.windows.net/{{ path }}")
+         .save())
+    config_mapping:
+      dataLakeTargetConfig.storageAccount: "account"
+      dataLakeTargetConfig.fileSystem: "container"
+      dataLakeTargetConfig.dirPathTemplate: "path"
+      dataFormatConfig.dataFormat: "output_format"
+    notes: "Use Delta format for Unity Catalog registration. Configure ADLS credentials via Databricks Secrets or instance profile."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.destination.devnull.NullDTarget"
+    streamsets_label: "Trash (Discard)"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "No-op (drop records)"
+    confidence: "exact"
+    code_template: |
+      # Trash / Discard Destination → no-op
+      # Records routed to Trash are intentionally discarded.
+      # In Databricks, simply do not write this DataFrame branch.
+      # If you need to count discarded records for monitoring:
+      discarded_count = df.count()
+      print(f"Discarded {discarded_count} records (Trash destination)")
+    config_mapping: {}
+    notes: "No write needed — just drop this branch. Log the count for observability if required."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.destination.eventhubs.EventHubProducerDTarget"
+    streamsets_label: "Azure Event Hubs Producer"
+    databricks_equivalent: "kafka_streaming"
+    databricks_label: "Spark Structured Streaming write to Event Hubs (Kafka protocol)"
+    confidence: "high"
+    code_template: |
+      # Event Hubs Producer → Spark Structured Streaming write via Kafka protocol
+      (df.selectExpr("CAST({{ key_field | default('id') }} AS STRING) AS key",
+                     "to_json(struct(*)) AS value")
+         .writeStream
+         .format("kafka")
+         .option("kafka.bootstrap.servers",
+                 "{{ event_hub_namespace }}.servicebus.windows.net:9093")
+         .option("topic", "{{ event_hub_name }}")
+         .option("kafka.security.protocol", "SASL_SSL")
+         .option("kafka.sasl.mechanism", "PLAIN")
+         .option("kafka.sasl.jaas.config",
+                 f"kafkashaded.org.apache.kafka.common.security.plain.PlainLoginModule required "
+                 f"username=\"$ConnectionString\" "
+                 f"password=\"{dbutils.secrets.get('{{ scope }}', 'eventhub_connection_string')}\";")
+         .option("checkpointLocation", "{{ checkpoint_path }}")
+         .start())
+    config_mapping:
+      conf.namespaceName: "event_hub_namespace"
+      conf.eventHubName: "event_hub_name"
+    notes: "Event Hubs exposes a Kafka endpoint. Use the Kafka Structured Streaming connector."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.destination.fragment.FragmentTarget"
+    streamsets_label: "Fragment Target"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Databricks Notebook output / shared module return"
+    confidence: "low"
+    code_template: |
+      # Fragment Target → Output boundary of a shared Fragment pipeline
+      # In Databricks: the fragment's output DataFrame is returned from the shared notebook/module.
+      # The parent pipeline receives it via the %run or import mechanism.
+      #
+      # In the shared module:
+      #   def run(df): ... return df_transformed
+      #
+      # In the parent notebook:
+      #   from shared.fragment_name import run
+      #   df_out = run(df_in)
+      #
+      # TODO: Define the output contract for this fragment
+      raise NotImplementedError("Fragment Target: define output DataFrame contract")
+    config_mapping: {}
+    notes: "Fragment Target marks the output of a reusable pipeline segment. Convert to a shared Python function return."
+    requires_manual_review: true
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.destination.http.HttpClientDTarget"
+    streamsets_label: "HTTP Client (Destination)"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Python requests in foreachBatch"
+    confidence: "medium"
+    code_template: |
+      # HTTP Client Destination → Python requests via foreachBatch
+      import requests
+
+      def post_to_api(batch_df, batch_id):
+          records = [row.asDict() for row in batch_df.collect()]
+          for record in records:
+              resp = requests.{{ http_method | default('post') }}(
+                  "{{ url }}",
+                  json=record,
+                  headers={{ headers | default({}) | tojson }},
+                  timeout=30
+              )
+              resp.raise_for_status()
+
+      # For streaming:
+      df.writeStream.foreachBatch(post_to_api).option("checkpointLocation", "{{ checkpoint_path }}").start()
+      # For batch:
+      # post_to_api(df, 0)
+    config_mapping:
+      conf.resourceUrl: "url"
+      conf.httpMethod: "http_method"
+      conf.headers: "headers"
+    notes: "Use foreachBatch for streaming. Add retry and error handling for production use."
+    requires_manual_review: false
+
   - streamsets_stage: "com.streamsets.pipeline.stage.destination.jdbc.JdbcDTarget"
     streamsets_label: "JDBC Producer"
     databricks_equivalent: "spark_dataframe"
@@ -17,47 +140,61 @@ stages:
     config_mapping:
       hikariConfigBean.connectionString: "jdbc_url"
       tableNameTemplate: "table_name"
-    notes: "Replace 'append' with 'overwrite' or 'merge' depending on pipeline semantics."
+      schema: "schema"
+    notes: "Use 'append' for inserts, 'overwrite' for full refresh. For upserts, use Delta MERGE INTO."
     requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.destination.jms.JmsDTarget"
+    streamsets_label: "JMS Producer"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Custom Python JMS publish (manual)"
+    confidence: "low"
+    code_template: |
+      # JMS Producer → No native Databricks connector
+      # TODO: Consider migrating the message sink to Kafka or Event Hubs,
+      # then use the standard Structured Streaming Kafka write connector.
+      #
+      # If JMS must be kept:
+      # import stomp
+      # conn = stomp.Connection([("{{ broker_host }}", {{ broker_port | default(61616) }})])
+      # conn.connect("{{ username }}", dbutils.secrets.get("{{ scope }}", "jms_password"))
+      # def send_message(batch_df, batch_id):
+      #     for row in batch_df.collect():
+      #         conn.send("{{ destination }}", str(row.asDict()))
+      raise NotImplementedError("JMS Producer: no native Databricks connector — consider migrating to Kafka")
+    config_mapping:
+      conf.brokerUrl: "broker_url"
+      conf.destinationName: "destination"
+    notes: "JMS has no native Databricks connector. Recommend bridging to Kafka or Event Hubs."
+    requires_manual_review: true
 
   - streamsets_stage: "com.streamsets.pipeline.stage.destination.kafka.KafkaDTarget"
     streamsets_label: "Kafka Producer"
     databricks_equivalent: "kafka_streaming"
-    databricks_label: "Spark Structured Streaming Kafka write"
+    databricks_label: "Spark Structured Streaming write to Kafka"
     confidence: "exact"
     code_template: |
       # Kafka Producer → Spark Structured Streaming write to Kafka
-      (df.selectExpr("CAST({{ key_field }} AS STRING) AS key",
-                     "to_json(struct(*)) AS value")
+      (df.selectExpr(
+              "CAST({{ key_field | default('id') }} AS STRING) AS key",
+              "to_json(struct(*)) AS value"
+          )
          .writeStream
          .format("kafka")
          .option("kafka.bootstrap.servers", "{{ bootstrap_servers }}")
          .option("topic", "{{ topic }}")
          .option("checkpointLocation", "{{ checkpoint_path }}")
          .start())
+      # For batch write:
+      # (df.selectExpr("CAST({{ key_field }} AS STRING) AS key", "to_json(struct(*)) AS value")
+      #    .write.format("kafka")
+      #    .option("kafka.bootstrap.servers", "{{ bootstrap_servers }}")
+      #    .option("topic", "{{ topic }}")
+      #    .save())
     config_mapping:
       kafkaConfigBean.metadataBrokerList: "bootstrap_servers"
       topic: "topic"
-    notes: "Adjust key serialization based on original pipeline key configuration."
-    requires_manual_review: false
-
-  - streamsets_stage: "com.streamsets.pipeline.stage.destination.s3.AmazonS3DTarget"
-    streamsets_label: "Amazon S3"
-    databricks_equivalent: "spark_dataframe"
-    databricks_label: "Spark write to S3"
-    confidence: "high"
-    code_template: |
-      # Amazon S3 → Spark write to S3
-      (df.write
-         .format("{{ output_format | default('parquet') }}")
-         .mode("{{ write_mode | default('append') }}")
-         .option("path", "s3a://{{ bucket }}/{{ prefix }}")
-         .partitionBy("{{ partition_columns | join('", "') }}")
-         .save())
-    config_mapping:
-      s3TargetConfigBean.s3Config.bucket: "bucket"
-      s3TargetConfigBean.s3Config.commonPrefix: "prefix"
-    notes: "Ensure S3 credentials are configured via Databricks instance profile or Secrets."
+    notes: "Serialize the value as JSON. Adjust key serialization based on the original pipeline key configuration."
     requires_manual_review: false
 
   - streamsets_stage: "com.streamsets.pipeline.stage.destination.localfilesystem.LocalFileSystemDTarget"
@@ -66,41 +203,18 @@ stages:
     databricks_label: "Spark write to DBFS or mounted storage"
     confidence: "high"
     code_template: |
-      # Local FS → Databricks DBFS / mounted storage
+      # Local FS Destination → Spark write to DBFS or mounted storage
       (df.write
          .format("{{ output_format | default('parquet') }}")
          .mode("{{ write_mode | default('append') }}")
          .save("{{ dbfs_path }}"))
+      # DBFS path examples:
+      #   /dbfs/mnt/my-mount/output/
+      #   dbfs:/user/hive/warehouse/my_table/
     config_mapping:
       fileNameConfig.dirPathTemplate: "output_dir"
       dataFormatConfig.dataFormat: "output_format"
-    notes: "Replace local filesystem paths with DBFS or mounted Azure/S3 paths."
-    requires_manual_review: false
-
-  - streamsets_stage: "com.streamsets.pipeline.stage.destination.elasticsearch.ElasticSearchDTarget"
-    streamsets_label: "Elasticsearch"
-    databricks_equivalent: "custom_python"
-    databricks_label: "elasticsearch-py bulk indexing"
-    confidence: "medium"
-    code_template: |
-      # Elasticsearch → elasticsearch-py
-      from elasticsearch import Elasticsearch, helpers
-
-      es = Elasticsearch([{"host": "{{ es_host }}", "port": {{ es_port | default(9200) }}}])
-
-      def write_to_es(batch_df, batch_id):
-          records = [row.asDict() for row in batch_df.collect()]
-          actions = [
-              {"_index": "{{ index_name }}", "_id": r.get("{{ id_field }}"), "_source": r}
-              for r in records
-          ]
-          helpers.bulk(es, actions)
-
-      df.writeStream.foreachBatch(write_to_es).start()
-    config_mapping:
-      elasticSearchConfig.httpUris: "es_host"
-      elasticSearchConfig.indexTemplate: "index_name"
-    notes: "For streaming pipelines, use foreachBatch. Install elasticsearch library on cluster."
+    notes: "Replace local filesystem paths with DBFS paths (dbfs:/...) or mounted Azure/S3/GCS paths."
     requires_manual_review: false
 
   - streamsets_stage: "com.streamsets.pipeline.stage.destination.mongodb.MongoDBDTarget"
@@ -109,59 +223,74 @@ stages:
     databricks_label: "Spark MongoDB Connector write"
     confidence: "high"
     code_template: |
-      # MongoDB → Spark MongoDB Connector write
+      # MongoDB Destination → Spark MongoDB Connector write
       (df.write
          .format("mongodb")
-         .option("spark.mongodb.write.connection.uri", "{{ connection_uri }}")
+         .option("spark.mongodb.write.connection.uri",
+                 dbutils.secrets.get("{{ scope }}", "mongodb_uri"))
          .option("spark.mongodb.write.database", "{{ database }}")
          .option("spark.mongodb.write.collection", "{{ collection }}")
-         .mode("append")
+         .mode("{{ write_mode | default('append') }}")
          .save())
     config_mapping:
       configBean.mongoConfig.connectionString: "connection_uri"
       configBean.mongoConfig.database: "database"
       configBean.mongoConfig.collection: "collection"
-    notes: "Requires spark-mongodb-connector library on the cluster."
+    notes: "Requires org.mongodb.spark:mongo-spark-connector on the cluster."
     requires_manual_review: false
 
-  - streamsets_stage: "com.streamsets.pipeline.stage.destination.http.HttpClientDTarget"
-    streamsets_label: "HTTP Client (Destination)"
-    databricks_equivalent: "custom_python"
-    databricks_label: "Python requests in foreachBatch"
-    confidence: "medium"
-    code_template: |
-      # HTTP Client Destination → requests in foreachBatch
-      import requests
-
-      def post_to_api(batch_df, batch_id):
-          records = [row.asDict() for row in batch_df.collect()]
-          for record in records:
-              resp = requests.post(
-                  "{{ url }}",
-                  json=record,
-                  headers={{ headers | tojson }},
-                  timeout=30
-              )
-              resp.raise_for_status()
-
-      df.writeStream.foreachBatch(post_to_api).start()
-    config_mapping:
-      conf.resourceUrl: "url"
-    notes: "Use foreachBatch for streaming. Add retry logic and error handling."
-    requires_manual_review: false
-
-  - streamsets_stage: "com.streamsets.pipeline.stage.destination.hive.HiveMetastoreDTarget"
-    streamsets_label: "Hive Metastore"
-    databricks_equivalent: "delta_merge"
-    databricks_label: "Delta Lake write via Spark SQL"
+  - streamsets_stage: "com.streamsets.pipeline.stage.destination.mongodb.atlas.MongoDBAtlasDTarget"
+    streamsets_label: "MongoDB Atlas"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark MongoDB Connector write (Atlas)"
     confidence: "high"
     code_template: |
-      # Hive Metastore → Delta Lake
-      df.write.format("delta").mode("{{ write_mode | default('append') }}").saveAsTable("{{ database }}.{{ table_name }}")
+      # MongoDB Atlas Destination → Spark MongoDB Connector write
+      (df.write
+         .format("mongodb")
+         .option("spark.mongodb.write.connection.uri",
+                 dbutils.secrets.get("{{ scope }}", "mongodb_atlas_uri"))
+         .option("spark.mongodb.write.database", "{{ database }}")
+         .option("spark.mongodb.write.collection", "{{ collection }}")
+         .mode("{{ write_mode | default('append') }}")
+         .save())
     config_mapping:
-      conf.dbNameEL: "database"
-      conf.tableNameEL: "table_name"
-    notes: "Delta Lake replaces Hive on Databricks. Use Unity Catalog for governance."
+      configBean.mongoConfig.connectionString: "connection_uri"
+      configBean.mongoConfig.database: "database"
+      configBean.mongoConfig.collection: "collection"
+    notes: "Same connector as MongoDB on-prem. Use Atlas connection string stored in Databricks Secrets."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.destination.remote.RemoteUploadDTarget"
+    streamsets_label: "SFTP/FTP/FTPS Client (Destination)"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Python paramiko/ftplib upload from DBFS"
+    confidence: "medium"
+    code_template: |
+      # SFTP/FTP Destination → Python paramiko upload from DBFS
+      import paramiko
+      import os
+
+      # Write DataFrame to DBFS first, then upload
+      local_path = "/dbfs/tmp/{{ output_filename }}"
+      df.write.format("{{ file_format | default('csv') }}").mode("overwrite").save(local_path)
+
+      ssh = paramiko.SSHClient()
+      ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+      ssh.connect(
+          hostname="{{ sftp_host }}",
+          port={{ sftp_port | default(22) }},
+          username="{{ sftp_user }}",
+          password=dbutils.secrets.get("{{ scope }}", "sftp_password")
+      )
+      sftp = ssh.open_sftp()
+      sftp.put(local_path, "{{ remote_path }}/{{ output_filename }}")
+      sftp.close(); ssh.close()
+    config_mapping:
+      remoteConfig.remoteAddress: "sftp_host"
+      remoteConfig.username: "sftp_user"
+      remoteConfig.remoteDirectory: "remote_path"
+    notes: "Install paramiko on the cluster. For managed SFTP, consider Azure Data Factory."
     requires_manual_review: false
 
   - streamsets_stage: "com.streamsets.pipeline.stage.destination.snowflake.SnowflakeDTarget"
@@ -170,9 +299,9 @@ stages:
     databricks_label: "Spark Snowflake Connector write"
     confidence: "high"
     code_template: |
-      # Snowflake → Spark Snowflake Connector
+      # Snowflake Destination → Spark Snowflake Connector
       snowflake_options = {
-          "sfURL": "{{ sf_url }}",
+          "sfURL": "{{ sf_account }}.snowflakecomputing.com",
           "sfAccount": "{{ sf_account }}",
           "sfUser": "{{ sf_user }}",
           "sfPassword": dbutils.secrets.get("{{ scope }}", "sf_password"),
@@ -184,9 +313,139 @@ stages:
          .format("net.snowflake.spark.snowflake")
          .options(**snowflake_options)
          .option("dbtable", "{{ sf_table }}")
-         .mode("append")
+         .mode("{{ write_mode | default('append') }}")
          .save())
     config_mapping:
-      connection.connectionString: "sf_url"
-    notes: "Requires snowflake-spark-connector. Consider using Databricks-to-Snowflake data sharing instead."
+      connection.connectionString: "sf_account"
+      table: "sf_table"
+    notes: "Requires net.snowflake:spark-snowflake and net.snowflake:snowflake-jdbc on the cluster."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.destination.splunk.SplunkDTarget"
+    streamsets_label: "Splunk"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Python Splunk HEC write via foreachBatch"
+    confidence: "medium"
+    code_template: |
+      # Splunk Destination → Splunk HTTP Event Collector (HEC)
+      import requests
+      import json
+
+      splunk_hec_url = "{{ splunk_hec_url }}"
+      splunk_token = dbutils.secrets.get("{{ scope }}", "splunk_hec_token")
+
+      def write_to_splunk(batch_df, batch_id):
+          records = [row.asDict() for row in batch_df.collect()]
+          events = [{"event": record, "sourcetype": "{{ source_type | default('_json') }}"} for record in records]
+          payload = "\n".join(json.dumps(e) for e in events)
+          resp = requests.post(
+              f"{splunk_hec_url}/services/collector/event",
+              headers={"Authorization": f"Splunk {splunk_token}"},
+              data=payload,
+              timeout=30
+          )
+          resp.raise_for_status()
+
+      df.writeStream.foreachBatch(write_to_splunk).option("checkpointLocation", "{{ checkpoint_path }}").start()
+    config_mapping:
+      conf.hecEndpoint: "splunk_hec_url"
+      conf.token: "splunk_token"
+    notes: "Use Splunk HEC for real-time event indexing. Batch events to reduce API call overhead."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.destination.toerror.ToErrorDTarget"
+    streamsets_label: "To Error"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "DLT expectations quarantine / error Delta table write"
+    confidence: "high"
+    code_template: |
+      # To Error Destination → Write failed records to error/quarantine table
+      # Option 1: Write error records to a Delta quarantine table
+      (df.write
+         .format("delta")
+         .mode("append")
+         .option("path", "{{ error_table_path | default('dbfs:/error_records/quarantine') }}")
+         .save())
+
+      # Option 2: DLT expectations (recommended for DLT pipelines)
+      # @dlt.expect_or_drop("valid_record", "{{ validation_condition }}")
+      # Invalid records are automatically quarantined to _rescue_data
+
+      # Option 3: Raise exception to fail the pipeline
+      # error_count = df.count()
+      # if error_count > 0:
+      #     raise RuntimeError(f"{error_count} records routed to error destination")
+    config_mapping: {}
+    notes: "Choose quarantine table or DLT expectations based on pipeline type. Log error records for debugging."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.destination.pubsub.PubSubDTarget"
+    streamsets_label: "Google Cloud Pub/Sub"
+    databricks_equivalent: "custom_python"
+    databricks_label: "google-cloud-pubsub publisher via foreachBatch"
+    confidence: "medium"
+    code_template: |
+      # Google Cloud Pub/Sub Destination → google-cloud-pubsub publisher
+      from google.cloud import pubsub_v1
+      import json
+
+      project_id = "{{ gcp_project }}"
+      topic_id = "{{ pubsub_topic }}"
+      publisher = pubsub_v1.PublisherClient()
+      topic_path = publisher.topic_path(project_id, topic_id)
+
+      def publish_to_pubsub(batch_df, batch_id):
+          futures = []
+          for row in batch_df.collect():
+              data = json.dumps(row.asDict()).encode("utf-8")
+              futures.append(publisher.publish(topic_path, data))
+          for f in futures:
+              f.result()  # wait for all publishes to complete
+
+      df.writeStream.foreachBatch(publish_to_pubsub).option("checkpointLocation", "{{ checkpoint_path }}").start()
+    config_mapping:
+      conf.projectId: "gcp_project"
+      conf.topicId: "pubsub_topic"
+    notes: "Install google-cloud-pubsub on the cluster. GCP credentials via Databricks service account."
+    requires_manual_review: false
+
+  # ── Stages listed under Executor in streamsets_stages.md but are Destinations ──
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.bigquery.enterprise.destination.BigQueryDTarget"
+    streamsets_label: "Google BigQuery (Destination)"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark BigQuery Connector write"
+    confidence: "high"
+    code_template: |
+      # BigQuery Destination → Spark BigQuery Connector write
+      (df.write
+         .format("bigquery")
+         .option("table", "{{ project }}.{{ dataset }}.{{ table }}")
+         .option("temporaryGcsBucket", "{{ temp_gcs_bucket }}")
+         .mode("{{ write_mode | default('append') }}")
+         .save())
+    config_mapping:
+      projectId: "project"
+      datasetName: "dataset"
+      tableName: "table"
+      stagingBucket: "temp_gcs_bucket"
+    notes: "Requires com.google.cloud.spark:spark-bigquery-with-dependencies. Uses GCS as a staging area."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.cloudstorage.destination.GoogleCloudStorageDTarget"
+    streamsets_label: "Google Cloud Storage (Destination)"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark write to GCS"
+    confidence: "high"
+    code_template: |
+      # Google Cloud Storage Destination → Spark write to GCS
+      (df.write
+         .format("{{ output_format | default('parquet') }}")
+         .mode("{{ write_mode | default('append') }}")
+         .save("gs://{{ bucket }}/{{ prefix }}"))
+    config_mapping:
+      gcsTargetConfig.bucketTemplate: "bucket"
+      gcsTargetConfig.commonPrefix: "prefix"
+      dataFormatConfig.dataFormat: "output_format"
+    notes: "Configure GCS credentials via Databricks service account or instance profile."
     requires_manual_review: false

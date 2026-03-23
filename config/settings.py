@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # Agent settings
     agent_max_tokens: int = 8096
     agent_concurrency: int = 3
+    # Set AGENT_COMPACT_CONTEXT=true when using a token-limited gateway model (e.g. Sonnet via AI gateway).
+    # Compact mode reduces the per-pipeline prompt from ~4000 tokens to ~1500 tokens by omitting
+    # verbose topology and config details, keeping only stage name, type, and FQCN.
+    agent_compact_context: bool = False
 
     # Review portal
     review_host: str = "0.0.0.0"

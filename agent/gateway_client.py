@@ -1,6 +1,14 @@
 """
 AI Gateway client — speaks the OpenAI-compatible chat completions API.
 
+[LLM] This module makes real LLM calls through your enterprise AI gateway.
+      Every call to messages_create() sends a request to the gateway endpoint and consumes tokens.
+      The gateway routes to the model specified by AI_GATEWAY_MODEL.
+      Configured via: AI_GATEWAY_URL, AI_GATEWAY_TOKEN, AI_GATEWAY_MODEL
+
+      Token note: If your gateway enforces per-request token limits, set
+      AGENT_COMPACT_CONTEXT=true in .env to reduce input prompt size ~60%.
+
 Use when your organisation routes AI traffic through a central gateway
 (LiteLLM, Azure AI Gateway, Apigee, etc.) instead of calling Anthropic directly.
 
@@ -212,6 +220,7 @@ class GatewayClient:
 
         for attempt in range(3):
             try:
+                # [LLM CALL] Sends request to AI gateway → forwards to AI_GATEWAY_MODEL
                 resp = await self._http.post("/chat/completions", json=payload)
                 if resp.status_code == 429:
                     if attempt == 2:

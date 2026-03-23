@@ -1,3 +1,27 @@
+"""
+MigrationAgent — orchestrates the LLM-driven pipeline migration loop.
+
+LLM USAGE SUMMARY
+-----------------
+This module makes LLM calls. Every call to `self.client.messages_create()` sends a
+request to the configured AI model (direct Anthropic or enterprise AI gateway).
+
+  Client selection:  controlled by AGENT_CLIENT_TYPE env var
+    "anthropic" → claude_client.ClaudeClient  (Anthropic SDK, direct)
+    "gateway"   → gateway_client.GatewayClient (OpenAI-compatible AI gateway)
+
+  Model:
+    Anthropic: ANTHROPIC_MODEL (default: claude-sonnet-4-6)
+    Gateway:   AI_GATEWAY_MODEL (as configured by your gateway team)
+
+  Per pipeline:  Up to 20 LLM calls maximum (one per agentic loop iteration).
+  Typical flow:  3-5 calls (classify → N×lookup → emit).
+
+  Token budget:  AGENT_MAX_TOKENS per call (default 8096).
+                 Set AGENT_COMPACT_CONTEXT=true to reduce input tokens ~60%
+                 when using a token-limited gateway model.
+"""
+
 import json
 from pathlib import Path
 
@@ -24,6 +48,8 @@ class MigrationAgent:
             emit_migration_result.TOOL_SCHEMA,
         ]
         self._system_prompt = self._load_system_prompt()
+        # Use compact context when configured (saves ~60% input tokens for gateway models)
+        self._compact = settings.agent_compact_context
 
     def _load_system_prompt(self) -> str:
         prompt_path = settings.prompts_dir / "system_prompt.md"
@@ -39,22 +65,39 @@ class MigrationAgent:
     ) -> GeneratedArtifact:
         """
         Run the agentic migration loop for a single pipeline.
-        Handles both initial migration and re-migration after reviewer feedback.
+
+        [LLM] Calls the configured AI model (Anthropic or gateway) up to 20 times.
+        Each iteration processes tool calls (classify_pipeline, lookup_stage_mapping,
+        emit_migration_result) until the agent emits a final result.
+
+        Args:
+            pipeline:       The parsed StreamSets pipeline to migrate.
+            feedback:       Reviewer feedback string for re-migration (optional).
+            prior_artifact: Previously generated artifact for re-migration (optional).
+
+        Returns:
+            GeneratedArtifact with the complete Databricks Python code.
         """
-        context = build_migration_prompt(pipeline, feedback, prior_artifact)
+        context = build_migration_prompt(
+            pipeline, feedback, prior_artifact, compact=self._compact
+        )
         messages: list[dict] = [{"role": "user", "content": context}]
         final_result: dict | None = None
 
-        for _ in range(20):  # max iterations guard
+        for iteration in range(20):  # max iterations guard — prevents runaway LLM loops
+            # ── LLM CALL ──────────────────────────────────────────────────────
+            # Sends messages + system prompt + tool schemas to the AI model.
+            # The model responds by calling one or more tools, or by ending its turn.
             response = await self.client.messages_create(
                 messages=messages,
                 system=self._system_prompt,
                 tools=self._tools,
             )
+            # ── END LLM CALL ──────────────────────────────────────────────────
 
             if response.stop_reason == "tool_use":
                 tool_results = self._dispatch_tools(response.content)
-                # Collect emit_migration_result if it appeared
+                # Capture emit_migration_result if it appeared in this turn
                 for block in response.content:
                     if hasattr(block, "name") and block.name == "emit_migration_result":
                         final_result = block.input
@@ -63,20 +106,23 @@ class MigrationAgent:
                 messages.append({"role": "user", "content": tool_results})
 
             elif response.stop_reason == "end_turn":
-                # Check if emit was in the last turn
+                # Agent finished without an outstanding tool call
                 if final_result is None:
-                    # Extract from message history as fallback
                     final_result = self._extract_emit_from_history(messages)
                 break
+
             else:
                 raise AgentError(f"Unexpected stop reason: {response.stop_reason}")
 
         if final_result is None:
-            raise AgentError("Agent did not emit a migration result")
+            raise AgentError(
+                f"Agent did not emit a migration result after {iteration + 1} iterations"
+            )
 
         return self._build_artifact(final_result)
 
     def _dispatch_tools(self, content_blocks) -> list[dict]:
+        """Execute tool calls returned by the LLM. No LLM involvement — pure Python logic."""
         results = []
         for block in content_blocks:
             if not hasattr(block, "name"):
@@ -85,15 +131,17 @@ class MigrationAgent:
             inp = block.input or {}
 
             if name == "lookup_stage_mapping":
+                # [NO LLM] Deterministic catalog lookup — no AI call made here
                 result = lookup_stage_mapping.execute(
                     stage_name=inp.get("stage_name", ""),
                     stage_config_summary=inp.get("stage_config_summary", {}),
                     catalog=self.catalog,
                 )
             elif name == "classify_pipeline":
+                # [NO LLM] Deterministic classification heuristic — no AI call made here
                 result = classify_pipeline.execute(**inp)
             elif name == "emit_migration_result":
-                # Acknowledge receipt — agent can continue after this
+                # [NO LLM] Receipt acknowledgment — the actual result was captured above
                 result = {"status": "received", "message": "Migration result recorded."}
             else:
                 result = {"error": f"Unknown tool: {name}"}
@@ -106,6 +154,7 @@ class MigrationAgent:
         return results
 
     def _extract_emit_from_history(self, messages: list[dict]) -> dict | None:
+        """Scan message history for a prior emit_migration_result call. No LLM call."""
         for msg in reversed(messages):
             if msg.get("role") != "assistant":
                 continue
@@ -118,6 +167,7 @@ class MigrationAgent:
         return None
 
     def _build_artifact(self, result: dict) -> GeneratedArtifact:
+        """Convert the raw emit_migration_result dict to a GeneratedArtifact. No LLM call."""
         fmt_str = result.get("target_format", "notebook")
         try:
             fmt = DatabricksTargetFormat(fmt_str)

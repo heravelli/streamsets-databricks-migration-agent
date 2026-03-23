@@ -1,23 +1,348 @@
+# Origins catalog — all 20 origin stages used across 2000 pipelines.
+# Source: streamsets_stages.md (authoritative list)
+# FQCN format: underscores in stage IDs replaced with dots (Java class name convention)
+
 stages:
+  - streamsets_stage: "com.streamsets.pipeline.stage.bigquery.origin.BigQueryDSource"
+    streamsets_label: "Google BigQuery"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark BigQuery Connector"
+    confidence: "high"
+    code_template: |
+      # Google BigQuery Origin → Spark BigQuery connector
+      df = (spark.read
+               .format("bigquery")
+               .option("table", "{{ project }}.{{ dataset }}.{{ table }}")
+               .option("filter", "{{ row_filter | default('') }}")
+               .load())
+    config_mapping:
+      projectId: "project"
+      datasetName: "dataset"
+      tableName: "table"
+    notes: "Requires com.google.cloud.spark:spark-bigquery-with-dependencies on the cluster."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.cloudstorage.origin.GoogleCloudStorageDSource"
+    streamsets_label: "Google Cloud Storage"
+    databricks_equivalent: "autoloader"
+    databricks_label: "Databricks Autoloader (GCS)"
+    confidence: "high"
+    code_template: |
+      # Google Cloud Storage Origin → Databricks Autoloader
+      df = (spark.readStream
+               .format("cloudFiles")
+               .option("cloudFiles.format", "{{ file_format | default('json') }}")
+               .option("cloudFiles.schemaLocation", "{{ schema_location }}")
+               .load("gs://{{ bucket }}/{{ prefix }}"))
+    config_mapping:
+      gcsOriginConfig.bucketTemplate: "bucket"
+      gcsOriginConfig.commonPrefix: "prefix"
+      dataFormatConfig.dataFormat: "file_format"
+    notes: "Configure GCS credentials via Databricks instance profile or Secrets."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.client.blob.BlobStorageDSource"
+    streamsets_label: "Azure Blob Storage"
+    databricks_equivalent: "autoloader"
+    databricks_label: "Databricks Autoloader (Azure Blob)"
+    confidence: "high"
+    code_template: |
+      # Azure Blob Storage Origin → Databricks Autoloader
+      df = (spark.readStream
+               .format("cloudFiles")
+               .option("cloudFiles.format", "{{ file_format | default('json') }}")
+               .option("cloudFiles.schemaLocation", "{{ schema_location }}")
+               .option("cloudFiles.connectionString",
+                       dbutils.secrets.get("{{ scope }}", "storage_connection_string"))
+               .load("wasbs://{{ container }}@{{ account }}.blob.core.windows.net/{{ prefix }}"))
+    config_mapping:
+      blobStorageConfig.storageAccount: "account"
+      blobStorageConfig.container: "container"
+      blobStorageConfig.prefix: "prefix"
+    notes: "Use Databricks Autoloader with cloudFiles.format matching the source file format."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.client.datalake.DataLakeStorageGen2DSource"
+    streamsets_label: "Azure Data Lake Storage Gen2"
+    databricks_equivalent: "autoloader"
+    databricks_label: "Databricks Autoloader (ADLS Gen2)"
+    confidence: "high"
+    code_template: |
+      # ADLS Gen2 Origin → Databricks Autoloader
+      df = (spark.readStream
+               .format("cloudFiles")
+               .option("cloudFiles.format", "{{ file_format | default('parquet') }}")
+               .option("cloudFiles.schemaLocation", "{{ schema_location }}")
+               .load("abfss://{{ container }}@{{ account }}.dfs.core.windows.net/{{ path }}"))
+    config_mapping:
+      dataLakeConfig.storageAccount: "account"
+      dataLakeConfig.fileSystem: "container"
+      dataLakeConfig.path: "path"
+    notes: "Use Autoloader for incremental file ingestion from ADLS Gen2."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.datalake.gen2.DataLakeGen2DSource"
+    streamsets_label: "Data Lake Storage Gen2 (alternate)"
+    databricks_equivalent: "autoloader"
+    databricks_label: "Databricks Autoloader (ADLS Gen2)"
+    confidence: "high"
+    code_template: |
+      # ADLS Gen2 Origin (gen2 package) → Databricks Autoloader
+      df = (spark.readStream
+               .format("cloudFiles")
+               .option("cloudFiles.format", "{{ file_format | default('parquet') }}")
+               .option("cloudFiles.schemaLocation", "{{ schema_location }}")
+               .load("abfss://{{ container }}@{{ account }}.dfs.core.windows.net/{{ path }}"))
+    config_mapping:
+      dataLakeGen2Config.storageAccount: "account"
+      dataLakeGen2Config.fileSystem: "container"
+      dataLakeGen2Config.path: "path"
+    notes: "Same Autoloader pattern as DataLakeStorageGen2DSource — check config keys against actual pipeline JSON."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.eventhubs.EventHubConsumerDSource"
+    streamsets_label: "Azure Event Hubs Consumer"
+    databricks_equivalent: "dlt_streaming_table"
+    databricks_label: "Delta Live Tables Streaming Table (Event Hubs via Kafka protocol)"
+    confidence: "high"
+    code_template: |
+      import dlt
+      from pyspark.sql.functions import col
+
+      # Azure Event Hubs Consumer → DLT via Kafka protocol endpoint
+      @dlt.table(
+          name="{{ table_name }}",
+          comment="Migrated from StreamSets Azure Event Hubs Consumer"
+      )
+      def {{ table_name }}():
+          return (spark.readStream
+                      .format("kafka")
+                      .option("kafka.bootstrap.servers", "{{ event_hub_namespace }}.servicebus.windows.net:9093")
+                      .option("subscribe", "{{ event_hub_name }}")
+                      .option("kafka.security.protocol", "SASL_SSL")
+                      .option("kafka.sasl.mechanism", "PLAIN")
+                      .option("kafka.sasl.jaas.config",
+                              f"kafkashaded.org.apache.kafka.common.security.plain.PlainLoginModule required "
+                              f"username=\"$ConnectionString\" "
+                              f"password=\"{dbutils.secrets.get('{{ scope }}', 'eventhub_connection_string')}\";")
+                      .load())
+    config_mapping:
+      conf.namespaceName: "event_hub_namespace"
+      conf.eventHubName: "event_hub_name"
+      conf.sasKey: "sas_key"
+    notes: "Event Hubs exposes a Kafka-compatible endpoint. Use the Kafka protocol for Structured Streaming."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.fragment.FragmentSource"
+    streamsets_label: "Fragment Source"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Databricks Notebook / Shared Library"
+    confidence: "low"
+    code_template: |
+      # Fragment Source → Extract shared logic into a Databricks Notebook or Python module
+      # Fragments are reusable pipeline segments. In Databricks, use %run or imports:
+      # %run ./shared/fragment_name
+      # OR
+      # from shared.fragment_name import transform_function
+      #
+      # TODO: Identify which pipelines reference this fragment and inline or import the logic.
+      raise NotImplementedError("Fragment Source requires manual decomposition into shared Databricks code")
+    config_mapping: {}
+    notes: "Fragments have no direct Databricks equivalent. Decompose into shared Python modules or notebook includes."
+    requires_manual_review: true
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.groovy.GroovyDSource"
+    streamsets_label: "Groovy Scripting Origin"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Custom Python data generation in Notebook"
+    confidence: "low"
+    code_template: |
+      # Groovy Scripting Origin → Custom Python
+      # Original Groovy script must be manually translated to Python
+      #
+      # Original Groovy:
+      # {{ groovy_script }}
+      #
+      # TODO: Translate the Groovy record generation logic to Python and create a DataFrame:
+      records = []  # populate from translated Groovy logic
+      df = spark.createDataFrame(records)
+    config_mapping:
+      groovyScript: "groovy_script"
+    notes: "Groovy scripting origins require full manual translation to Python."
+    requires_manual_review: true
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.http.HttpClientDSource"
+    streamsets_label: "HTTP Client"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Python requests in Databricks Notebook"
+    confidence: "medium"
+    code_template: |
+      # HTTP Client Origin → Python requests
+      import requests
+      from pyspark.sql import Row
+
+      response = requests.get(
+          url="{{ resource_url }}",
+          headers={{ headers | default({}) | tojson }},
+          timeout=30
+      )
+      response.raise_for_status()
+      data = response.json()
+
+      # Convert response to Spark DataFrame
+      # Adjust based on actual response shape (list of records, nested object, etc.)
+      df = spark.createDataFrame([Row(**item) for item in data] if isinstance(data, list) else [Row(**data)])
+    config_mapping:
+      conf.resourceUrl: "resource_url"
+      conf.headers: "headers"
+      conf.httpMethod: "http_method"
+    notes: "For paginated APIs, implement pagination loop. For streaming, poll via Databricks Job schedule."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.jdbc.JdbcDSource"
+    streamsets_label: "JDBC Multitable Consumer"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark JDBC read (multi-table)"
+    confidence: "high"
+    code_template: |
+      # JDBC Multitable Consumer → Spark JDBC read
+      jdbc_df = (spark.read
+                   .format("jdbc")
+                   .option("url", "{{ jdbc_url }}")
+                   .option("dbtable", "{{ schema }}.{{ table_name }}")
+                   .option("user", "{{ username }}")
+                   .option("password", dbutils.secrets.get("{{ scope }}", "{{ secret_key }}"))
+                   .option("numPartitions", "{{ num_partitions | default(4) }}")
+                   .load())
+    config_mapping:
+      hikariConfigBean.connectionString: "jdbc_url"
+      tableJdbcConfigBean.schema: "schema"
+      tableJdbcConfigBean.tablePattern: "table_name"
+    notes: "For multitable, loop over table list. Use partitionColumn and bounds for parallel reads."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.jdbc.table.TableJdbcDSource"
+    streamsets_label: "JDBC Query Consumer"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark JDBC read with incremental offset"
+    confidence: "high"
+    code_template: |
+      # JDBC Query Consumer → Spark JDBC incremental read
+      df = (spark.read
+               .format("jdbc")
+               .option("url", "{{ jdbc_url }}")
+               .option("query",
+                       "SELECT * FROM {{ table }} WHERE {{ offset_column }} > {{ last_offset }}")
+               .option("user", "{{ username }}")
+               .option("password", dbutils.secrets.get("{{ scope }}", "{{ secret_key }}"))
+               .load())
+      # Track last_offset in a Delta table or Databricks checkpoint for incremental reads
+    config_mapping:
+      queryConfig.query: "query"
+      hikariConfigBean.connectionString: "jdbc_url"
+      tableConfigs: "table"
+    notes: "Store offset in a Delta table for reliable incremental reads across runs."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.jms.JmsDSource"
+    streamsets_label: "JMS Consumer"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Custom Python JMS client (manual)"
+    confidence: "low"
+    code_template: |
+      # JMS Consumer → No native Databricks equivalent
+      # TODO: Consider migrating the message source to Kafka or Event Hubs,
+      # then use the standard Kafka/Event Hubs Structured Streaming connector.
+      #
+      # If JMS must be kept:
+      # import stomp  # or another JMS-compatible Python client
+      # conn = stomp.Connection([("{{ broker_host }}", {{ broker_port | default(61616) }})])
+      # conn.connect("{{ username }}", dbutils.secrets.get("{{ scope }}", "jms_password"))
+      raise NotImplementedError("JMS Consumer: no native Databricks connector — consider migrating to Kafka")
+    config_mapping:
+      conf.brokerUrl: "broker_url"
+      conf.destinationName: "queue_or_topic"
+    notes: "JMS has no native Databricks connector. Recommend bridging to Kafka or Event Hubs."
+    requires_manual_review: true
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.jython.JythonDSource"
+    streamsets_label: "Jython Scripting Origin"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Custom Python data generation in Notebook"
+    confidence: "medium"
+    code_template: |
+      # Jython Scripting Origin → Python (Jython is Python 2.x; adapt for Python 3)
+      # Original Jython script:
+      # {{ jython_script }}
+      #
+      # TODO: Translate Jython record generation logic to Python 3
+      records = []  # populate from translated Jython logic
+      df = spark.createDataFrame(records)
+    config_mapping:
+      script: "jython_script"
+    notes: "Jython runs Python 2.x. Minor syntax updates needed for Python 3 compatibility."
+    requires_manual_review: true
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.mongodb.MongoDBDSource"
+    streamsets_label: "MongoDB"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark MongoDB Connector read"
+    confidence: "high"
+    code_template: |
+      # MongoDB Origin → Spark MongoDB Connector
+      df = (spark.read
+               .format("mongodb")
+               .option("spark.mongodb.read.connection.uri",
+                       dbutils.secrets.get("{{ scope }}", "mongodb_uri"))
+               .option("spark.mongodb.read.database", "{{ database }}")
+               .option("spark.mongodb.read.collection", "{{ collection }}")
+               .load())
+    config_mapping:
+      configBean.mongoConfig.connectionString: "connection_uri"
+      configBean.mongoConfig.database: "database"
+      configBean.mongoConfig.collection: "collection"
+    notes: "Requires org.mongodb.spark:mongo-spark-connector on the cluster."
+    requires_manual_review: false
+
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.mongodb.atlas.MongoDBAtlasDSource"
+    streamsets_label: "MongoDB Atlas"
+    databricks_equivalent: "spark_dataframe"
+    databricks_label: "Spark MongoDB Connector read (Atlas)"
+    confidence: "high"
+    code_template: |
+      # MongoDB Atlas Origin → Spark MongoDB Connector
+      df = (spark.read
+               .format("mongodb")
+               .option("spark.mongodb.read.connection.uri",
+                       dbutils.secrets.get("{{ scope }}", "mongodb_atlas_uri"))
+               .option("spark.mongodb.read.database", "{{ database }}")
+               .option("spark.mongodb.read.collection", "{{ collection }}")
+               .load())
+    config_mapping:
+      configBean.mongoConfig.connectionString: "connection_uri"
+      configBean.mongoConfig.database: "database"
+      configBean.mongoConfig.collection: "collection"
+    notes: "Same connector as MongoDB on-prem. Use Atlas connection string with credentials in Secrets."
+    requires_manual_review: false
+
   - streamsets_stage: "com.streamsets.pipeline.stage.origin.multikafka.MultiKafkaDSource"
     streamsets_label: "Multi-Topic Kafka Consumer"
     databricks_equivalent: "dlt_streaming_table"
-    databricks_label: "Delta Live Tables Streaming Table (Multi-topic Kafka)"
+    databricks_label: "Delta Live Tables Streaming Table (multi-topic Kafka)"
     confidence: "exact"
     code_template: |
       import dlt
-      from pyspark.sql.functions import col, from_json, lit
-      from pyspark.sql.types import StringType
+      from pyspark.sql.functions import col
 
-      # Multi-topic Kafka — create one DLT streaming table per topic
+      # Multi-topic Kafka Consumer → one DLT streaming table per topic
       # Topics: {{ topic_list }}
 
       {% for topic in topic_list %}
       @dlt.table(
-          name="{{ topic | replace('-', '_') }}_raw",
-          comment="Migrated from StreamSets Multi-Topic Kafka Consumer — topic: {{ topic }}"
+          name="{{ topic | replace('-', '_') | replace('.', '_') }}_raw",
+          comment="Migrated from StreamSets Multi-Topic Kafka — topic: {{ topic }}"
       )
-      def {{ topic | replace('-', '_') }}_raw():
+      def {{ topic | replace('-', '_') | replace('.', '_') }}_raw():
           return (spark.readStream
                       .format("kafka")
                       .option("kafka.bootstrap.servers", "{{ bootstrap_servers }}")
@@ -27,9 +352,7 @@ stages:
                       .selectExpr(
                           "CAST(key AS STRING) AS kafka_key",
                           "CAST(value AS STRING) AS kafka_value",
-                          "topic",
-                          "partition",
-                          "offset",
+                          "topic", "partition", "offset",
                           "timestamp AS kafka_timestamp"
                       ))
       {% endfor %}
@@ -38,57 +361,40 @@ stages:
       conf.topicList: "topic_list"
       conf.consumerGroup: "consumer_group"
       conf.kafkaAutoOffsetReset: "starting_offsets"
-    notes: "Each topic becomes a separate DLT streaming table. Union them downstream if needed."
+    notes: "Each topic becomes a separate DLT streaming table. Union downstream if a single stream is needed."
     requires_manual_review: false
 
-  - streamsets_stage: "com.streamsets.pipeline.stage.origin.jdbc.JdbcDSource"
-    streamsets_label: "JDBC Multitable Consumer"
-    databricks_equivalent: "autoloader"
-    databricks_label: "Databricks Autoloader (JDBC)"
-    confidence: "high"
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.remote.RemoteDownloadDSource"
+    streamsets_label: "SFTP/FTP/FTPS Client (Origin)"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Python paramiko/ftplib download to DBFS"
+    confidence: "medium"
     code_template: |
-      # JDBC Multitable Consumer → Databricks JDBC read
-      jdbc_df = (spark.read
-                   .format("jdbc")
-                   .option("url", "{{ jdbc_url }}")
-                   .option("dbtable", "{{ schema }}.{{ table_name }}")
-                   .option("user", "{{ username }}")
-                   .option("password", dbutils.secrets.get("{{ scope }}", "{{ secret_key }}"))
-                   .load())
-    config_mapping:
-      hikariConfigBean.connectionString: "jdbc_url"
-      tableJdbcConfigBean.schema: "schema"
-      tableJdbcConfigBean.tablePattern: "table_name"
-    notes: "Multitable mode generates single-table template. Loop over tables for multitable pipelines."
-    requires_manual_review: false
+      # SFTP/FTP Origin → Python download to DBFS then read
+      import paramiko
+      import io
 
-  - streamsets_stage: "com.streamsets.pipeline.stage.origin.kafka.KafkaDSource"
-    streamsets_label: "Kafka Consumer"
-    databricks_equivalent: "dlt_streaming_table"
-    databricks_label: "Delta Live Tables Streaming Table (Kafka)"
-    confidence: "exact"
-    code_template: |
-      import dlt
-      from pyspark.sql.functions import col, from_json
-      from pyspark.sql.types import StringType
-
-      @dlt.table(
-          name="{{ table_name }}",
-          comment="Migrated from StreamSets Kafka Consumer"
+      ssh = paramiko.SSHClient()
+      ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+      ssh.connect(
+          hostname="{{ sftp_host }}",
+          port={{ sftp_port | default(22) }},
+          username="{{ sftp_user }}",
+          password=dbutils.secrets.get("{{ scope }}", "sftp_password")
       )
-      def {{ table_name }}():
-          return (spark.readStream
-                      .format("kafka")
-                      .option("kafka.bootstrap.servers", "{{ bootstrap_servers }}")
-                      .option("subscribe", "{{ topic }}")
-                      .option("startingOffsets", "{{ starting_offsets | default('latest') }}")
-                      .load()
-                      .selectExpr("CAST(key AS STRING)", "CAST(value AS STRING)", "timestamp"))
+      sftp = ssh.open_sftp()
+
+      # Download file to DBFS
+      local_path = "/dbfs/tmp/{{ remote_file | basename }}"
+      sftp.get("{{ remote_path }}/{{ remote_file }}", local_path)
+      sftp.close(); ssh.close()
+
+      df = spark.read.format("{{ file_format | default('csv') }}").load(local_path)
     config_mapping:
-      kafkaConfigBean.metadataBrokerList: "bootstrap_servers"
-      kafkaConfigBean.topic: "topic"
-      kafkaConfigBean.kafkaAutoOffsetReset: "starting_offsets"
-    notes: ""
+      remoteConfig.remoteAddress: "sftp_host"
+      remoteConfig.username: "sftp_user"
+      remoteConfig.remoteDirectory: "remote_path"
+    notes: "Install paramiko on the cluster. Consider Azure Data Factory or ADF for managed SFTP ingestion."
     requires_manual_review: false
 
   - streamsets_stage: "com.streamsets.pipeline.stage.origin.s3.AmazonS3DSource"
@@ -97,7 +403,7 @@ stages:
     databricks_label: "Databricks Autoloader (S3)"
     confidence: "high"
     code_template: |
-      # Amazon S3 → Databricks Autoloader
+      # Amazon S3 Origin → Databricks Autoloader
       df = (spark.readStream
                .format("cloudFiles")
                .option("cloudFiles.format", "{{ file_format | default('json') }}")
@@ -107,145 +413,49 @@ stages:
       s3ConfigBean.s3Config.bucket: "bucket"
       s3ConfigBean.s3Config.commonPrefix: "prefix"
       dataFormatConfig.dataFormat: "file_format"
-    notes: "Autoloader replaces S3 polling. Set cloudFiles.schemaLocation to a Delta table path."
+    notes: "Autoloader replaces S3 polling. Use cloudFiles.schemaLocation for schema evolution."
     requires_manual_review: false
 
-  - streamsets_stage: "com.streamsets.pipeline.stage.origin.mysql.MySQLBinLogDSource"
-    streamsets_label: "MySQL Binary Log"
-    databricks_equivalent: "dlt_streaming_table"
-    databricks_label: "Delta Live Tables (CDC via Debezium or DMS)"
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.scheduler.ScheduledDPushSource"
+    streamsets_label: "Scheduled Task (Push Source)"
+    databricks_equivalent: "custom_python"
+    databricks_label: "Databricks Job with schedule trigger"
     confidence: "medium"
     code_template: |
-      # MySQL Binary Log → Databricks CDC
-      # RECOMMENDATION: Use AWS DMS or Debezium to stream CDC events to Kafka,
-      # then consume with DLT APPLY CHANGES.
-      import dlt
-
-      @dlt.table(name="{{ table_name }}_raw_cdc")
-      def {{ table_name }}_raw_cdc():
-          return (spark.readStream
-                      .format("kafka")
-                      .option("kafka.bootstrap.servers", "{{ bootstrap_servers }}")
-                      .option("subscribe", "{{ cdc_topic }}")
-                      .load())
-
-      dlt.apply_changes(
-          target="{{ table_name }}",
-          source="{{ table_name }}_raw_cdc",
-          keys=["{{ primary_key }}"],
-          sequence_by=col("timestamp"),
-          apply_as_deletes=expr("op = 'D'"),
-          except_column_list=["_rescued_data"]
-      )
+      # Scheduled Push Source → Databricks Job with cron schedule
+      # This stage triggers pipeline execution on a schedule.
+      # In Databricks: configure a Job trigger (cron or file arrival) instead of embedding scheduling in code.
+      #
+      # The downstream pipeline logic runs as a Databricks Job task.
+      # Set the Job schedule to: {{ cron_expression | default('0 * * * *') }}
+      print("Scheduled execution started")
     config_mapping:
-      configBean.hostname: "mysql_host"
-      configBean.port: "mysql_port"
-    notes: "Direct binlog reading is not supported in Databricks. Route through Debezium+Kafka or AWS DMS."
+      conf.cronExpression: "cron_expression"
+    notes: "Replace with Databricks Job schedule trigger. No code needed — configure in Job settings UI."
     requires_manual_review: true
 
-  - streamsets_stage: "com.streamsets.pipeline.stage.origin.mongodb.MongoDBDSource"
-    streamsets_label: "MongoDB"
-    databricks_equivalent: "spark_dataframe"
-    databricks_label: "Spark MongoDB Connector"
-    confidence: "high"
-    code_template: |
-      # MongoDB → Databricks Spark MongoDB Connector
-      df = (spark.read
-               .format("mongodb")
-               .option("spark.mongodb.read.connection.uri", "{{ connection_uri }}")
-               .option("spark.mongodb.read.database", "{{ database }}")
-               .option("spark.mongodb.read.collection", "{{ collection }}")
-               .load())
-    config_mapping:
-      configBean.mongoConfig.connectionString: "connection_uri"
-      configBean.mongoConfig.database: "database"
-      configBean.mongoConfig.collection: "collection"
-    notes: "Requires spark-mongodb-connector library on the cluster."
-    requires_manual_review: false
-
-  - streamsets_stage: "com.streamsets.pipeline.stage.origin.http.HttpClientDSource"
-    streamsets_label: "HTTP Client"
+  - streamsets_stage: "com.streamsets.pipeline.stage.origin.startJob.StartJobDSource"
+    streamsets_label: "Start Job Origin"
     databricks_equivalent: "custom_python"
-    databricks_label: "Python requests / httpx in Notebook"
+    databricks_label: "Databricks Jobs API / dbutils.notebook.run"
     confidence: "medium"
     code_template: |
-      # HTTP Client → Python requests
+      # Start Job Origin → Databricks Jobs API
       import requests
-      from pyspark.sql import Row
 
-      response = requests.get(
-          url="{{ resource_url }}",
-          headers={{ headers | tojson }},
-          timeout=30
+      # Trigger a Databricks Job run via REST API
+      job_api_url = f"{dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiUrl().get()}/api/2.1/jobs/run-now"
+      token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+
+      response = requests.post(
+          job_api_url,
+          headers={"Authorization": f"Bearer {token}"},
+          json={"job_id": {{ job_id }}}
       )
       response.raise_for_status()
-      data = response.json()
-
-      # Convert to DataFrame
-      df = spark.createDataFrame([Row(**item) for item in data])
+      run_id = response.json()["run_id"]
+      print(f"Triggered job run: {run_id}")
     config_mapping:
-      conf.resourceUrl: "resource_url"
-      conf.headers: "headers"
-    notes: "For paginated APIs, implement pagination logic manually."
-    requires_manual_review: false
-
-  - streamsets_stage: "com.streamsets.pipeline.stage.origin.local.LocalFSDSource"
-    streamsets_label: "Directory (Local FS)"
-    databricks_equivalent: "spark_dataframe"
-    databricks_label: "Spark read from DBFS or mounted storage"
-    confidence: "high"
-    code_template: |
-      # Local FS Directory → Databricks DBFS / mounted storage
-      df = (spark.read
-               .format("{{ file_format | default('json') }}")
-               .option("multiline", "{{ multiline | default('true') }}")
-               .load("{{ dbfs_path }}"))
-    config_mapping:
-      fileInfoConfig.filePattern: "file_pattern"
-      dataFormatConfig.dataFormat: "file_format"
-    notes: "Replace local filesystem paths with DBFS paths (dbfs:/...) or mounted Azure/S3 paths."
-    requires_manual_review: false
-
-  - streamsets_stage: "com.streamsets.pipeline.stage.origin.jdbc.table.TableJdbcDSource"
-    streamsets_label: "JDBC Query Consumer"
-    databricks_equivalent: "spark_dataframe"
-    databricks_label: "Spark JDBC read with offset tracking"
-    confidence: "high"
-    code_template: |
-      # JDBC Query Consumer → Spark JDBC with incremental read
-      df = (spark.read
-               .format("jdbc")
-               .option("url", "{{ jdbc_url }}")
-               .option("query", "SELECT * FROM {{ table }} WHERE {{ offset_column }} > {{ last_offset }}")
-               .option("user", "{{ username }}")
-               .option("password", dbutils.secrets.get("{{ scope }}", "{{ secret_key }}"))
-               .load())
-    config_mapping:
-      queryConfig.query: "query"
-      hikariConfigBean.connectionString: "jdbc_url"
-    notes: "Implement offset tracking using Delta table or Databricks checkpoint."
-    requires_manual_review: false
-
-  - streamsets_stage: "com.streamsets.pipeline.stage.origin.salesforce.SalesforceDSource"
-    streamsets_label: "Salesforce"
-    databricks_equivalent: "custom_python"
-    databricks_label: "Salesforce Connector (simple-salesforce or Fivetran)"
-    confidence: "medium"
-    code_template: |
-      # Salesforce → simple-salesforce Python library
-      from simple_salesforce import Salesforce
-
-      sf = Salesforce(
-          username="{{ sf_username }}",
-          password=dbutils.secrets.get("{{ scope }}", "sf_password"),
-          security_token=dbutils.secrets.get("{{ scope }}", "sf_token")
-      )
-
-      result = sf.query_all("{{ soql_query }}")
-      records = result["records"]
-      df = spark.createDataFrame(records)
-    config_mapping:
-      forceConfig.username: "sf_username"
-      forceConfig.soqlQuery: "soql_query"
-    notes: "Install simple-salesforce on the cluster. For large volumes, consider Fivetran/Airbyte."
+      conf.jobId: "job_id"
+    notes: "Use Databricks Jobs API to trigger downstream jobs. Consider Workflows for orchestration."
     requires_manual_review: false

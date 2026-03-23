@@ -83,6 +83,7 @@ class MigrationAgent:
         )
         messages: list[dict] = [{"role": "user", "content": context}]
         final_result: dict | None = None
+        _nudged = False  # send at most one reminder to call emit_migration_result
 
         for iteration in range(20):  # max iterations guard — prevents runaway LLM loops
             # ── LLM CALL ──────────────────────────────────────────────────────
@@ -106,10 +107,30 @@ class MigrationAgent:
                 messages.append({"role": "user", "content": tool_results})
 
             elif response.stop_reason == "end_turn":
-                # Agent finished without an outstanding tool call
+                # Agent finished — check if emit was already captured
                 if final_result is None:
                     final_result = self._extract_emit_from_history(messages)
-                break
+
+                if final_result is not None:
+                    break
+
+                # Model stopped early without calling emit_migration_result.
+                # Send one nudge to remind it, then continue the loop.
+                if _nudged:
+                    break  # already nudged — give up and let the None check below raise
+                _nudged = True
+                # Append the assistant's premature end_turn content (may be empty)
+                if response.content:
+                    messages.append({"role": "assistant", "content": response.content})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "You have not yet called `emit_migration_result`. "
+                        "Please generate the complete Databricks code now and call "
+                        "`emit_migration_result` with the full result."
+                    ),
+                })
+                # [LLM] — continuation after nudge, counted in the same iteration budget
 
             else:
                 raise AgentError(f"Unexpected stop reason: {response.stop_reason}")

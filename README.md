@@ -26,21 +26,26 @@ The agent auto-selects the best Databricks target per pipeline:
 
 ### Prerequisites
 - Python 3.11+
-- [uv](https://docs.astral.sh/uv/) package manager
-- Anthropic API key **or** AI gateway credentials (see [AI Gateway](#ai-gateway))
+- [uv](https://docs.astral.sh/uv/) package manager — install with `pip install uv` or see [uv docs](https://docs.astral.sh/uv/getting-started/installation/)
+- An API key for one of: Anthropic, OpenAI, or your enterprise AI gateway
 
 ### Setup
 
 ```bash
-git clone <repo-url>
-cd streamsets_databrickst_migration_agent
+git clone git@github.com:heravelli/streamsets-databricks-migration-agent.git
+cd streamsets-databricks-migration-agent
 
-# Install dependencies
+# Create and activate a virtual environment
+uv venv
+source .venv/bin/activate        # macOS / Linux
+# .venv\Scripts\activate         # Windows
+
+# Install dependencies into the venv
 uv sync
 
 # Configure credentials
 cp .env.example .env
-# Edit .env and set ANTHROPIC_API_KEY (or AI gateway settings)
+# Edit .env — choose one of the three client options (anthropic / openai / gateway)
 ```
 
 ### Run

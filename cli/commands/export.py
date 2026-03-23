@@ -45,6 +45,18 @@ def export(
         raise typer.Exit(0)
 
     src_root = settings.output_dir
+    # Guard: destination must not be the same as (or inside) the source output dir
+    try:
+        output_dir.resolve().relative_to(src_root.resolve())
+        console.print(
+            f"[red]Export destination cannot be inside the output directory ({src_root}).\n"
+            f"Choose a different path, e.g.:[/red]\n"
+            f"  migrate export /data/deploy/"
+        )
+        raise typer.Exit(1)
+    except ValueError:
+        pass  # destination is outside src_root — safe to proceed
+
     tmp_dir = output_dir if fmt == "directory" else output_dir.parent / "_export_tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 

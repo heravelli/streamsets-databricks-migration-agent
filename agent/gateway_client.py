@@ -307,10 +307,19 @@ class GatewayClient:
                     # Log redirect chain so misconfigured paths are easy to diagnose
                     for r in resp.history:
                         log.warning("Gateway redirect: %s %s → %s", r.status_code, r.url, r.headers.get("location"))
-                if resp.status_code == 429:
+                # 429 = rate limited, 529 = gateway/model overloaded — both are retryable
+                if resp.status_code in (429, 529):
                     if attempt == 2:
-                        resp.raise_for_status()
-                    await asyncio.sleep(2 ** attempt * 5)
+                        raise RuntimeError(
+                            f"Gateway returned HTTP {resp.status_code} after 3 attempts "
+                            f"(model overloaded). Try --concurrency 1 or retry later."
+                        )
+                    delay = 2 ** attempt * 5  # 5s, 10s, 20s
+                    log.warning(
+                        "Gateway returned %d (overloaded), retrying in %ds (attempt %d/3)",
+                        resp.status_code, delay, attempt + 1,
+                    )
+                    await asyncio.sleep(delay)
                     continue
                 if not resp.is_success:
                     # Surface the gateway error body so it is visible in logs

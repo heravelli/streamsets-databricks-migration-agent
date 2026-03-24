@@ -93,7 +93,8 @@ class MigrationAgent:
         messages: list[dict] = [{"role": "user", "content": context}]
         final_result: dict | None = None
         _nudged = False  # send at most one reminder to call emit_migration_result
-        self._lookup_confidences: list[float] = []  # collected during dispatch; reset per pipeline
+        self._lookup_confidences: list[float] = []   # collected during dispatch; reset per pipeline
+        self._unmapped_stage_names: list[str] = []  # stages where catalog returned found=False
 
         for iteration in range(20):  # max iterations guard — prevents runaway LLM loops
             # ── LLM CALL ──────────────────────────────────────────────────────
@@ -168,9 +169,11 @@ class MigrationAgent:
                     stage_config_summary=inp.get("stage_config_summary", {}),
                     catalog=self.catalog,
                 )
-                # Track confidence for deterministic scoring — not left to the LLM
+                # Track confidence and unmapped stages deterministically — not left to the LLM
                 conf_str = result.get("confidence", "unsupported")
                 self._lookup_confidences.append(_CONFIDENCE_VALUES.get(conf_str, 0.0))
+                if not result.get("found", False):
+                    self._unmapped_stage_names.append(inp.get("stage_name", ""))
             elif name == "classify_pipeline":
                 # [NO LLM] Deterministic classification heuristic — no AI call made here
                 result = classify_pipeline.execute(**inp)
@@ -269,6 +272,6 @@ class MigrationAgent:
             content=code,
             agent_reasoning=result.get("agent_reasoning", ""),
             confidence_score=confidence,
-            unmapped_stages=result.get("unmapped_stages", []),
+            unmapped_stages=self._unmapped_stage_names,
             warnings=result.get("warnings", []),
         )

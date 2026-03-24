@@ -17,10 +17,22 @@ class StageCatalog:
                 self._mappings[mapping.streamsets_stage] = mapping
 
     def lookup(self, stage_name: str) -> StageMapping | None:
+        # 1. Exact match (dot notation)
         if stage_name in self._mappings:
             return self._mappings[stage_name]
-        # Suffix match for versioned or alternate class names
-        stage_short = stage_name.split(".")[-1].lower()
+        # 2. Normalize underscore-separated FQCNs → dot notation.
+        #    Real SDC pipeline exports use underscores as package separators, e.g.:
+        #      com_streamsets_pipeline_stage_origin_multikafka_MultiKafkaDSource
+        #    Our catalog stores the canonical Java dot notation:
+        #      com.streamsets.pipeline.stage.origin.multikafka.MultiKafkaDSource
+        if "_" in stage_name and "." not in stage_name:
+            normalized = stage_name.replace("_", ".")
+            if normalized in self._mappings:
+                return self._mappings[normalized]
+            stage_short = normalized.split(".")[-1].lower()
+        else:
+            stage_short = stage_name.split(".")[-1].lower()
+        # 3. Suffix match — handles versioned class names and minor path variants
         for key, mapping in self._mappings.items():
             if key.split(".")[-1].lower() == stage_short:
                 return mapping
